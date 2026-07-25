@@ -1,13 +1,12 @@
 # Changelog
 
-## v0.2.2-loopback-test - 2026-07-25
+## Test tooling - 2026-07-25
 
-- Derived a temporary USART2 character-loopback diagnostic from commit `dcffbd2`.
-- Bypassed Shared Protocol parsing, command handling, TIM6 sampling, and telemetry at runtime.
-- Reused the interrupt-driven USART2 RX/TX rings and main-context event dispatcher.
-- Echoed every received byte without modification and toggled LD2 after successful TX enqueue.
-- Added Tera Term setup, interpretation, and breakpoint-based verification guidance.
-- Retained Shared Protocol sources and regression tests without claiming Protocol runtime compatibility.
+- Added an interactive Python sweep for all implemented PC-to-MCU commands.
+- Added continuous TELEMETRY_SAMPLE decoding and ASCII sine-wave display.
+- Added immediate q/Q termination with confirmed STOP_STREAM ACK before closing the port.
+- Added sample-gap, CRC, format, status-flag, and sine-range statistics.
+- Kept firmware version 0.2.2 and shared wire Protocol 0.1.0 unchanged.
 
 ## v0.2.2 - 2026-07-25
 

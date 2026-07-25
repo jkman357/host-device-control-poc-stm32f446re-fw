@@ -4,12 +4,12 @@
 //     main.c
 //
 // Purpose:
-//     Provides the temporary USART2 loopback firmware entry point.
+//     Provides the firmware entry point.
 //
 // Responsibilities:
-//     - Initializes the platform and interrupt-driven serial transport.
-//     - Runs the event-driven foreground dispatcher.
-//     - Leaves TIM6 and Shared Protocol processing disabled for isolation.
+//     - Initializes platform and firmware modules.
+//     - Starts the default Protocol-configured sample timer.
+//     - Runs the event-driven superloop.
 //     - Enters a defined fail-stop state when initialization fails.
 
 #include "main.h"
@@ -17,6 +17,7 @@
 #include "app.h"
 #include "app_event.h"
 #include "platform.h"
+#include "protocol_messages.h"
 #include "serial_transport.h"
 
 /*
@@ -52,7 +53,7 @@ static void main_enter_fail_stop(void)
  *     main
  *
  * Purpose:
- *     Initializes and runs the temporary USART2 character-loopback firmware.
+ *     Initializes the platform and runs the event-driven superloop.
  *
  * Input Parameters:
  *     None.
@@ -80,6 +81,11 @@ int main(void)
     app_event_init();
     serial_transport_init();
     app_init();
+    is_initialized = platform_start_sample_timer(PROTOCOL_STREAM_INTERVAL_DEFAULT_US);
+    if (is_initialized == false)
+    {
+        main_enter_fail_stop();
+    }
 
     for (;;)
     {

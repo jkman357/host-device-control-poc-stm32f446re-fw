@@ -1,7 +1,3 @@
-> **Loopback diagnostic note:** The temporary `dcffbd2` loopback derivative retains this Protocol source and its
-> regression tests, but the MCU runtime intentionally bypasses Protocol parsing and echoes raw USART2 bytes.
-> Restore the normal Protocol application before PC/MCU framed interoperability testing.
-
 # Shared Binary Protocol 0.1.0 — MCU Implementation Summary
 
 The system repository's `protocol/protocol.yaml` is the wire-level authority. The copy under

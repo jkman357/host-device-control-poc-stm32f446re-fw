@@ -374,29 +374,6 @@ def main() -> int:
             if re.search(pattern, text):
                 errors.append(f"{relative}: prohibited {description}")
 
-    app_text = (ROOT / "App/Src/app.c").read_text(encoding="utf-8")
-    main_text = (ROOT / "Core/Src/main.c").read_text(encoding="utf-8")
-    loopback_tokens = (
-        "serial_transport_read_byte(&data_byte)",
-        "serial_transport_write(&data_byte, sizeof(data_byte))",
-        "APP_EVENT_FLAG_UART_RX_AVAILABLE",
-        "platform_led_set(s_is_led_on)",
-    )
-    for token in loopback_tokens:
-        if token not in app_text:
-            errors.append(f"loopback application missing required token: {token}")
-    for prohibited_runtime_token in (
-        "protocol_parser",
-        "protocol_encode_frame",
-        "sine_generator",
-    ):
-        if prohibited_runtime_token in app_text:
-            errors.append(
-                f"loopback application unexpectedly uses runtime token: {prohibited_runtime_token}"
-            )
-    if "platform_start_sample_timer" in main_text:
-        errors.append("loopback main unexpectedly starts TIM6 sample timer")
-
     platform_text = (ROOT / "Platform/Src/platform.c").read_text(encoding="utf-8")
     if "TIM6_PERIOD_MAX_US" in platform_text:
         errors.append(
