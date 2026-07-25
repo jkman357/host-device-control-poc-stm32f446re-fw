@@ -1,19 +1,22 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
 //
 // File:
-//     syscalls.c
+//     syscalls.h
 //
 // Purpose:
-//     Provides explicit unsupported POSIX syscall stubs for the bare-metal PoC.
+//     Defines the newlib-nano syscall integration contract for the bare-metal PoC.
 //
-// Responsibilities:
-//     - Satisfies newlib-nano integration symbols.
-//     - Rejects file-system and standard-stream operations.
-//     - Does not allocate memory or redirect I/O.
+// Public Contract:
+//     - Declares the externally mandated newlib syscall symbols.
+//     - Defines all file and stream operations as unsupported.
+//     - Does not provide heap allocation or I/O redirection.
 
-#include "syscalls.h"
+#ifndef SYSCALLS_H
+#define SYSCALLS_H
 
-#define SYSCALL_RESULT_UNSUPPORTED    (-1)
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * Function:
@@ -36,11 +39,7 @@
  * Notes:
  *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
  */
-int _close(int file_descriptor)
-{
-    (void)file_descriptor;
-    return SYSCALL_RESULT_UNSUPPORTED;
-}
+int _close(int file_descriptor);
 
 /*
  * Function:
@@ -67,13 +66,7 @@ int _close(int file_descriptor)
  * Notes:
  *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
  */
-int _lseek(int file_descriptor, int offset, int origin)
-{
-    (void)file_descriptor;
-    (void)offset;
-    (void)origin;
-    return SYSCALL_RESULT_UNSUPPORTED;
-}
+int _lseek(int file_descriptor, int offset, int origin);
 
 /*
  * Function:
@@ -101,13 +94,7 @@ int _lseek(int file_descriptor, int offset, int origin)
  * Notes:
  *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
  */
-int _read(int file_descriptor, char *buffer, int length)
-{
-    (void)file_descriptor;
-    (void)buffer;
-    (void)length;
-    return SYSCALL_RESULT_UNSUPPORTED;
-}
+int _read(int file_descriptor, char *buffer, int length);
 
 /*
  * Function:
@@ -134,10 +121,10 @@ int _read(int file_descriptor, char *buffer, int length)
  * Notes:
  *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
  */
-int _write(int file_descriptor, char *buffer, int length)
-{
-    (void)file_descriptor;
-    (void)buffer;
-    (void)length;
-    return SYSCALL_RESULT_UNSUPPORTED;
+int _write(int file_descriptor, char *buffer, int length);
+
+#ifdef __cplusplus
 }
+#endif
+
+#endif // SYSCALLS_H

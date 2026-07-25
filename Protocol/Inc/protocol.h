@@ -1,3 +1,17 @@
+// Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     protocol.h
+//
+// Purpose:
+//     Defines the public framing, parser, and serialization contract.
+//
+// Public Contract:
+//     - Defines bounded frame and parser types.
+//     - Parses received bytes without dynamic allocation.
+//     - Encodes frames into caller-owned buffers.
+//     - Serializes little-endian integer fields.
+
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
@@ -56,36 +70,113 @@ typedef struct
     uint32_t crc_error_count;
 } protocol_parser_t;
 
-/**
- * @brief Initialize a protocol parser instance.
- * @param parser Parser instance.
+/*
+ * Function:
+ *     protocol_parser_init
+ *
+ * Purpose:
+ *     Initializes a caller-owned protocol parser and clears its
+ *         diagnostics.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     parser:
+ *         Receives initialized parser state when the pointer is valid. A
+ *         NULL pointer is ignored.
+ *
+ * Return Value:
+ *     None.
  */
-void ProtocolParser_Init(protocol_parser_t *parser);
+void protocol_parser_init(protocol_parser_t *parser);
 
-/**
- * @brief Push one received byte into the frame parser.
- * @param parser Parser instance.
- * @param data_byte Next received byte.
- * @param[out] frame Completed frame when the return value is FRAME_READY.
- * @return Parser result.
+/*
+ * Function:
+ *     protocol_parser_push_byte
+ *
+ * Purpose:
+ *     Consumes one received byte and advances the caller-owned frame
+ *         parser.
+ *
+ * Input Parameters:
+ *     parser:
+ *         Supplies the current parser state and is updated by the
+ *         function.
+ *     data_byte:
+ *         Supplies the next received wire byte.
+ *     frame:
+ *         Supplies caller-owned frame storage used while parsing.
+ *
+ * Output Parameters:
+ *     parser:
+ *         Receives updated parser state and diagnostic counters.
+ *     frame:
+ *         Receives a completed frame only when PROTOCOL_PARSE_FRAME_READY
+ *         is returned. Otherwise partial frame content is not a valid
+ *         message.
+ *
+ * Return Value:
+ *     PROTOCOL_PARSE_NO_FRAME:
+ *         No complete frame is available.
+ *     PROTOCOL_PARSE_FRAME_READY:
+ *         A complete CRC-valid frame is available in frame.
+ *     PROTOCOL_PARSE_FORMAT_ERROR:
+ *         An argument or header field was invalid.
+ *     PROTOCOL_PARSE_CRC_ERROR:
+ *         The candidate frame CRC did not match.
+ *
+ * Notes:
+ *     Runs in main context and performs bounded work for one input byte.
  */
-protocol_parse_result_t ProtocolParser_PushByte(protocol_parser_t *parser,
+protocol_parse_result_t protocol_parser_push_byte(protocol_parser_t *parser,
                                                 uint8_t data_byte,
                                                 protocol_frame_t *frame);
 
-/**
- * @brief Encode one frame into a caller-owned output buffer.
- * @param message_id Message identifier.
- * @param flags Frame flags.
- * @param sequence Sequence value.
- * @param payload Payload pointer, or NULL when payload_length is zero.
- * @param payload_length Payload length.
- * @param[out] output Output buffer.
- * @param output_capacity Output buffer capacity.
- * @param[out] encoded_length Number of encoded bytes.
- * @return True on success.
+/*
+ * Function:
+ *     protocol_encode_frame
+ *
+ * Purpose:
+ *     Validates and encodes one protocol frame into caller-owned storage.
+ *
+ * Input Parameters:
+ *     message_id:
+ *         Supplies the message identifier.
+ *     flags:
+ *         Supplies the frame classification flags.
+ *     sequence:
+ *         Supplies the frame sequence value.
+ *     payload:
+ *         Points to payload bytes, or is NULL when payload_length is
+ *         zero.
+ *     payload_length:
+ *         Supplies the number of payload bytes.
+ *     output:
+ *         Points to caller-owned output storage.
+ *     output_capacity:
+ *         Supplies the output buffer capacity.
+ *     encoded_length:
+ *         Points to storage for the encoded byte count.
+ *
+ * Output Parameters:
+ *     output:
+ *         Receives the complete encoded frame only when true is returned.
+ *         The content is unspecified on failure.
+ *     encoded_length:
+ *         Receives the encoded byte count only when true is returned. The
+ *         value remains unchanged on failure.
+ *
+ * Return Value:
+ *     true:
+ *         The frame was encoded successfully.
+ *     false:
+ *         An argument, payload length, or output capacity was invalid.
+ *
+ * Notes:
+ *     The function does not retain caller-owned pointers.
  */
-bool Protocol_EncodeFrame(uint16_t message_id,
+bool protocol_encode_frame(uint16_t message_id,
                           uint8_t flags,
                           uint16_t sequence,
                           const uint8_t *payload,
@@ -94,22 +185,54 @@ bool Protocol_EncodeFrame(uint16_t message_id,
                           size_t output_capacity,
                           size_t *encoded_length);
 
-/**
- * @brief Write a little-endian 16-bit value.
- * @param destination Two-byte destination.
- * @param value Value to write.
+/*
+ * Function:
+ *     protocol_write_u16_le
+ *
+ * Purpose:
+ *     Writes one 16-bit value in little-endian byte order.
+ *
+ * Input Parameters:
+ *     destination:
+ *         Points to at least two writable bytes.
+ *     value:
+ *         Supplies the value to serialize.
+ *
+ * Output Parameters:
+ *     destination:
+ *         Receives two serialized bytes when the pointer is valid. A NULL
+ *         pointer is ignored.
+ *
+ * Return Value:
+ *     None.
  */
-void Protocol_WriteU16Le(uint8_t *destination, uint16_t value);
+void protocol_write_u16_le(uint8_t *destination, uint16_t value);
 
-/**
- * @brief Write a little-endian 32-bit value.
- * @param destination Four-byte destination.
- * @param value Value to write.
+/*
+ * Function:
+ *     protocol_write_u32_le
+ *
+ * Purpose:
+ *     Writes one 32-bit value in little-endian byte order.
+ *
+ * Input Parameters:
+ *     destination:
+ *         Points to at least four writable bytes.
+ *     value:
+ *         Supplies the value to serialize.
+ *
+ * Output Parameters:
+ *     destination:
+ *         Receives four serialized bytes when the pointer is valid. A
+ *         NULL pointer is ignored.
+ *
+ * Return Value:
+ *     None.
  */
-void Protocol_WriteU32Le(uint8_t *destination, uint32_t value);
+void protocol_write_u32_le(uint8_t *destination, uint32_t value);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* PROTOCOL_H */
+#endif // PROTOCOL_H

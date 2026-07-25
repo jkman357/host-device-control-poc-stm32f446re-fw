@@ -1,3 +1,15 @@
+// Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     protocol_messages.h
+//
+// Purpose:
+//     Defines the implemented PoC message and result identifiers.
+//
+// Public Contract:
+//     - Provides compile-time message IDs, flags, and command-result constants.
+//     - Mirrors the repository protocol YAML baseline.
+
 #ifndef PROTOCOL_MESSAGES_H
 #define PROTOCOL_MESSAGES_H
 
@@ -37,4 +49,4 @@ typedef enum
 }
 #endif
 
-#endif /* PROTOCOL_MESSAGES_H */
+#endif // PROTOCOL_MESSAGES_H

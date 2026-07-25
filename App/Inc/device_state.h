@@ -1,3 +1,15 @@
+// Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     device_state.h
+//
+// Purpose:
+//     Defines the externally visible device operating states.
+//
+// Public Contract:
+//     - Provides the finite device-state type used by the application and protocol.
+//     - Does not expose mutable application state.
+
 #ifndef DEVICE_STATE_H
 #define DEVICE_STATE_H
 
@@ -18,4 +30,4 @@ typedef enum
 }
 #endif
 
-#endif /* DEVICE_STATE_H */
+#endif // DEVICE_STATE_H

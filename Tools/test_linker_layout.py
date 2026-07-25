@@ -61,7 +61,7 @@ def main() -> int:
         return 0
 
     source_text = r'''
-void Reset_Handler(void) {}
+void startup_reset_handler(void) {}
 __attribute__((section(".isr_vector"))) const unsigned long g_test_vector[2] = {0ul, 0ul};
 unsigned long g_test_bss_word;
 unsigned char g_test_bss_buffer[128];

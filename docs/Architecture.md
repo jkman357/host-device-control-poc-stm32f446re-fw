@@ -6,7 +6,7 @@ The firmware uses a non-blocking foreground dispatcher and interrupt-backed even
 
 ```text
 TIM6 ISR ───────────────┐
-                        ├─> AppEvent pending state ─> main superloop ─> App_ProcessEvents()
+                        ├─> AppEvent pending state ─> main superloop ─> app_process_events()
 USART2 RX/error ISR ────┘
 
 main context:

@@ -1,3 +1,16 @@
+// Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     app_event.c
+//
+// Purpose:
+//     Implements bounded event transfer from interrupt context to the main loop.
+//
+// Responsibilities:
+//     - Coalesces UART event flags.
+//     - Counts pending 5 ms ticks without dynamic allocation.
+//     - Protects event snapshots with a bounded interrupt critical section.
+
 #include "app_event.h"
 
 #include <limits.h>
@@ -9,11 +22,24 @@ static volatile uint32_t s_event_flags;
 static volatile uint16_t s_tick_count;
 static volatile uint32_t s_tick_overflow_count;
 
-/**
- * @brief Saturating increment for a 32-bit diagnostic counter.
- * @param counter Counter to increment.
+/*
+ * Function:
+ *     app_event_increment_saturating_u32
+ *
+ * Purpose:
+ *     Saturating increment for a 32-bit diagnostic counter.
+ *
+ * Input Parameters:
+ *     counter:
+ *         Counter to increment.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
  */
-static void AppEvent_IncrementSaturatingU32(volatile uint32_t *counter)
+static void app_event_increment_saturating_u32(volatile uint32_t *counter)
 {
     if (*counter < UINT32_MAX)
     {
@@ -21,20 +47,51 @@ static void AppEvent_IncrementSaturatingU32(volatile uint32_t *counter)
     }
 }
 
-/**
- * @brief Initialize event state.
+/*
+ * Function:
+ *     app_event_init
+ *
+ * Purpose:
+ *     Initialize event state.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
  */
-void AppEvent_Init(void)
+void app_event_init(void)
 {
     s_event_flags = 0u;
     s_tick_count = 0u;
     s_tick_overflow_count = 0u;
 }
 
-/**
- * @brief Post one 5 ms tick from interrupt context.
+/*
+ * Function:
+ *     app_event_post_tick_from_isr
+ *
+ * Purpose:
+ *     Posts one pending 5 ms tick from interrupt context.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Execution Context: ISR. Blocking: prohibited. Reentrant: protected
+ *         by interrupt serialization. Timing Budget: bounded counter
+ *         update.
  */
-void AppEvent_PostTickFromIsr(void)
+void app_event_post_tick_from_isr(void)
 {
     if (s_tick_count < UINT16_MAX)
     {
@@ -42,25 +99,62 @@ void AppEvent_PostTickFromIsr(void)
     }
     else
     {
-        AppEvent_IncrementSaturatingU32(&s_tick_overflow_count);
+        app_event_increment_saturating_u32(&s_tick_overflow_count);
     }
 }
 
-/**
- * @brief Post event flags from interrupt context.
- * @param flags Bitwise OR of APP_EVENT_FLAG values.
+/*
+ * Function:
+ *     app_event_post_flags_from_isr
+ *
+ * Purpose:
+ *     Adds event flags to the interrupt-owned pending event word.
+ *
+ * Input Parameters:
+ *     flags:
+ *         Supplies a bitwise OR of defined APP_EVENT_FLAG values.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Execution Context: ISR. Blocking: prohibited. Reentrant: protected
+ *         by interrupt serialization. Timing Budget: one
+ *         read-modify-write operation.
  */
-void AppEvent_PostFlagsFromIsr(uint32_t flags)
+void app_event_post_flags_from_isr(uint32_t flags)
 {
     s_event_flags |= flags;
 }
 
-/**
- * @brief Atomically take all currently pending events.
- * @param[out] event_batch Destination batch.
- * @return True when at least one event was returned.
+/*
+ * Function:
+ *     app_event_take
+ *
+ * Purpose:
+ *     Atomically transfers all currently pending events to the caller.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     event_batch:
+ *         Receives a coherent event snapshot when the pointer is valid.
+ *         The object remains unchanged when the pointer is NULL.
+ *
+ * Return Value:
+ *     true:
+ *         At least one event flag or pending tick was transferred.
+ *     false:
+ *         The pointer was NULL or no event was pending.
+ *
+ * Notes:
+ *     Runs in main context and uses a bounded PRIMASK critical section.
  */
-bool AppEvent_Take(app_event_batch_t *event_batch)
+bool app_event_take(app_event_batch_t *event_batch)
 {
     uint32_t primask;
     bool has_event;
@@ -70,7 +164,7 @@ bool AppEvent_Take(app_event_batch_t *event_batch)
         return false;
     }
 
-    primask = Platform_IrqSave();
+    primask = platform_irq_save();
 
     event_batch->flags = s_event_flags;
     event_batch->tick_count = s_tick_count;
@@ -79,25 +173,38 @@ bool AppEvent_Take(app_event_batch_t *event_batch)
     s_event_flags = 0u;
     s_tick_count = 0u;
 
-    Platform_IrqRestore(primask);
+    platform_irq_restore(primask);
 
     has_event = ((event_batch->flags != 0u) || (event_batch->tick_count != 0u));
     return has_event;
 }
 
-/**
- * @brief Atomically sleep until an interrupt can make an event pending.
+/*
+ * Function:
+ *     app_event_wait
+ *
+ * Purpose:
+ *     Atomically sleep until an interrupt can make an event pending.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
  */
-void AppEvent_Wait(void)
+void app_event_wait(void)
 {
     uint32_t primask;
 
-    primask = Platform_IrqSave();
+    primask = platform_irq_save();
 
     if ((s_event_flags == 0u) && (s_tick_count == 0u))
     {
-        Platform_WaitForInterrupt();
+        platform_wait_for_interrupt();
     }
 
-    Platform_IrqRestore(primask);
+    platform_irq_restore(primask);
 }

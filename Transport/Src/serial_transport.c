@@ -1,3 +1,17 @@
+// Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     serial_transport.c
+//
+// Purpose:
+//     Implements interrupt-driven USART2 transport for ST-LINK VCP.
+//
+// Responsibilities:
+//     - Owns fixed-capacity RX and TX ring buffers.
+//     - Moves bytes in bounded interrupt handlers.
+//     - Reports overflow and UART error counters.
+//     - Separates transport behavior from application and protocol logic.
+
 #include "serial_transport.h"
 
 #include <limits.h>
@@ -33,6 +47,7 @@
 #define TX_RING_CAPACITY                (512u)
 #define RX_RING_MASK                    (RX_RING_CAPACITY - 1u)
 #define TX_RING_MASK                    (TX_RING_CAPACITY - 1u)
+#define RING_RESERVED_SLOT_COUNT         (1u)
 
 #if ((RX_RING_CAPACITY & RX_RING_MASK) != 0u)
 #error RX_RING_CAPACITY must be a power of two.
@@ -52,11 +67,24 @@ static volatile uint32_t s_rx_overflow_count;
 static volatile uint32_t s_tx_overflow_count;
 static volatile uint32_t s_uart_error_count;
 
-/**
- * @brief Saturating increment for a transport diagnostic counter.
- * @param counter Counter to increment.
+/*
+ * Function:
+ *     serial_transport_increment_saturating_u32
+ *
+ * Purpose:
+ *     Saturating increment for a transport diagnostic counter.
+ *
+ * Input Parameters:
+ *     counter:
+ *         Counter to increment.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
  */
-static void SerialTransport_IncrementSaturatingU32(volatile uint32_t *counter)
+static void serial_transport_increment_saturating_u32(volatile uint32_t *counter)
 {
     if (*counter < UINT32_MAX)
     {
@@ -64,39 +92,82 @@ static void SerialTransport_IncrementSaturatingU32(volatile uint32_t *counter)
     }
 }
 
-/**
- * @brief Calculate TX ring free capacity with one slot reserved.
- * @return Free byte capacity.
+/*
+ * Function:
+ *     serial_transport_get_tx_free_capacity
+ *
+ * Purpose:
+ *     Calculate TX ring free capacity with one slot reserved.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     result:
+ *         Free byte capacity.
  */
-static uint16_t SerialTransport_GetTxFreeCapacity(void)
+static uint16_t serial_transport_get_tx_free_capacity(void)
 {
-    return (uint16_t)((s_tx_tail - s_tx_head - 1u) & TX_RING_MASK);
+    return (uint16_t)((s_tx_tail - s_tx_head - RING_RESERVED_SLOT_COUNT) & TX_RING_MASK);
 }
 
-/**
- * @brief Push one received byte from interrupt context.
- * @param data_byte Received byte.
+/*
+ * Function:
+ *     serial_transport_push_rx_from_isr
+ *
+ * Purpose:
+ *     Stores one received byte in the bounded receive ring.
+ *
+ * Input Parameters:
+ *     data_byte:
+ *         Supplies the byte read from USART2.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Execution Context: ISR. Blocking: prohibited. On overflow the byte
+ *         is dropped and a saturating counter is incremented.
  */
-static void SerialTransport_PushRxFromIsr(uint8_t data_byte)
+static void serial_transport_push_rx_from_isr(uint8_t data_byte)
 {
     const uint16_t next_head = (uint16_t)((s_rx_head + 1u) & RX_RING_MASK);
 
     if (next_head == s_rx_tail)
     {
-        SerialTransport_IncrementSaturatingU32(&s_rx_overflow_count);
+        serial_transport_increment_saturating_u32(&s_rx_overflow_count);
     }
     else
     {
         s_rx_ring[s_rx_head] = data_byte;
         s_rx_head = next_head;
-        AppEvent_PostFlagsFromIsr(APP_EVENT_FLAG_UART_RX_AVAILABLE);
+        app_event_post_flags_from_isr(APP_EVENT_FLAG_UART_RX_AVAILABLE);
     }
 }
 
-/**
- * @brief Initialize USART2 and static RX/TX ring buffers.
+/*
+ * Function:
+ *     serial_transport_init
+ *
+ * Purpose:
+ *     Initialize USART2 and static RX/TX ring buffers.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
  */
-void SerialTransport_Init(void)
+void serial_transport_init(void)
 {
     volatile uint32_t discarded_data;
 
@@ -108,34 +179,55 @@ void SerialTransport_Init(void)
     s_tx_overflow_count = 0u;
     s_uart_error_count = 0u;
 
-    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
-    (void)RCC->APB1ENR;
+    RCC->apb1enr |= RCC_APB1ENR_USART2EN;
+    // Read back the enable register to complete the peripheral-clock write.
+    (void)RCC->apb1enr;
 
-    RCC->APB1RSTR |= RCC_APB1RSTR_USART2RST;
-    RCC->APB1RSTR &= ~RCC_APB1RSTR_USART2RST;
+    RCC->apb1rstr |= RCC_APB1RSTR_USART2RST;
+    RCC->apb1rstr &= ~RCC_APB1RSTR_USART2RST;
 
-    USART2->CR1 = 0u;
-    USART2->CR2 = 0u;
-    USART2->CR3 = 0u;
-    USART2->BRR = USART2_BRR_16MHZ_115200;
+    USART2->cr1 = 0u;
+    USART2->cr2 = 0u;
+    USART2->cr3 = 0u;
+    USART2->brr = USART2_BRR_16MHZ_115200;
 
-    discarded_data = USART2->SR;
-    discarded_data = USART2->DR;
+    discarded_data = USART2->sr;
+    discarded_data = USART2->dr;
+    // The read sequence clears any reset-time receive and error status.
     (void)discarded_data;
 
-    Stm32Nvic_SetPriority(USART2_IRQ_NUMBER, USART2_IRQ_PRIORITY);
-    Stm32Nvic_EnableIrq(USART2_IRQ_NUMBER);
+    stm32_nvic_set_priority(USART2_IRQ_NUMBER, USART2_IRQ_PRIORITY);
+    stm32_nvic_enable_irq(USART2_IRQ_NUMBER);
 
-    USART2->CR3 = USART_CR3_EIE;
-    USART2->CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_RXNEIE | USART_CR1_UE;
+    USART2->cr3 = USART_CR3_EIE;
+    USART2->cr1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_RXNEIE | USART_CR1_UE;
 }
 
-/**
- * @brief Read one byte from the RX ring buffer.
- * @param[out] data_byte Destination byte.
- * @return True when one byte was returned.
+/*
+ * Function:
+ *     serial_transport_read_byte
+ *
+ * Purpose:
+ *     Removes one byte from the receive ring buffer.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     data_byte:
+ *         Receives one byte when true is returned. The object remains
+ *         unchanged when false is returned.
+ *
+ * Return Value:
+ *     true:
+ *         One byte was returned.
+ *     false:
+ *         The pointer was NULL or the receive ring was empty.
+ *
+ * Notes:
+ *     Runs in main context and does not block.
  */
-bool SerialTransport_ReadByte(uint8_t *data_byte)
+bool serial_transport_read_byte(uint8_t *data_byte)
 {
     if ((data_byte == NULL) || (s_rx_tail == s_rx_head))
     {
@@ -147,13 +239,36 @@ bool SerialTransport_ReadByte(uint8_t *data_byte)
     return true;
 }
 
-/**
- * @brief Queue a contiguous byte sequence for interrupt-driven transmission.
- * @param data Source bytes.
- * @param length Number of bytes.
- * @return Transport result.
+/*
+ * Function:
+ *     serial_transport_write
+ *
+ * Purpose:
+ *     Queues a contiguous byte sequence for interrupt-driven
+ *         transmission.
+ *
+ * Input Parameters:
+ *     data:
+ *         Points to the bytes to queue. The function copies all bytes
+ *         before returning.
+ *     length:
+ *         Supplies the number of bytes to queue.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     SERIAL_TRANSPORT_RESULT_OK:
+ *         All bytes were queued.
+ *     SERIAL_TRANSPORT_RESULT_INVALID_ARGUMENT:
+ *         The pointer or length was invalid.
+ *     SERIAL_TRANSPORT_RESULT_NO_CAPACITY:
+ *         The transmit ring did not have sufficient capacity.
+ *
+ * Notes:
+ *     Runs in main context and uses a bounded PRIMASK critical section.
  */
-serial_transport_result_t SerialTransport_Write(const uint8_t *data, size_t length)
+serial_transport_result_t serial_transport_write(const uint8_t *data, size_t length)
 {
     uint32_t primask;
     size_t data_index;
@@ -164,13 +279,13 @@ serial_transport_result_t SerialTransport_Write(const uint8_t *data, size_t leng
         return SERIAL_TRANSPORT_RESULT_INVALID_ARGUMENT;
     }
 
-    primask = Platform_IrqSave();
-    free_capacity = SerialTransport_GetTxFreeCapacity();
+    primask = platform_irq_save();
+    free_capacity = serial_transport_get_tx_free_capacity();
 
     if (length > (size_t)free_capacity)
     {
-        SerialTransport_IncrementSaturatingU32(&s_tx_overflow_count);
-        Platform_IrqRestore(primask);
+        serial_transport_increment_saturating_u32(&s_tx_overflow_count);
+        platform_irq_restore(primask);
         return SERIAL_TRANSPORT_RESULT_NO_CAPACITY;
     }
 
@@ -182,67 +297,104 @@ serial_transport_result_t SerialTransport_Write(const uint8_t *data, size_t leng
         data_index += 1u;
     }
 
-    USART2->CR1 |= USART_CR1_TXEIE;
-    Platform_IrqRestore(primask);
+    USART2->cr1 |= USART_CR1_TXEIE;
+    platform_irq_restore(primask);
 
     return SERIAL_TRANSPORT_RESULT_OK;
 }
 
-/**
- * @brief Return a snapshot of transport diagnostic counters.
- * @param[out] statistics Destination statistics.
+/*
+ * Function:
+ *     serial_transport_get_statistics
+ *
+ * Purpose:
+ *     Returns an atomic snapshot of transport diagnostic counters.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     statistics:
+ *         Receives the counter snapshot when the pointer is valid. A NULL
+ *         pointer is ignored.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Runs in main context and uses a bounded PRIMASK critical section.
  */
-void SerialTransport_GetStatistics(serial_transport_statistics_t *statistics)
+void serial_transport_get_statistics(serial_transport_statistics_t *statistics)
 {
     uint32_t primask;
 
     if (statistics != NULL)
     {
-        primask = Platform_IrqSave();
+        primask = platform_irq_save();
         statistics->rx_overflow_count = s_rx_overflow_count;
         statistics->tx_overflow_count = s_tx_overflow_count;
         statistics->uart_error_count = s_uart_error_count;
-        Platform_IrqRestore(primask);
+        platform_irq_restore(primask);
     }
 }
 
-/**
- * @brief Handle USART2 RX, TX, and error interrupts.
+/*
+ * Function:
+ *     serial_transport_usart2_irq_handler
+ *
+ * Purpose:
+ *     Handles USART2 receive, transmit, and error interrupts.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Execution Context: ISR. Blocking: prohibited. Reentrant: not
+ *         required. Timing Budget: one received byte and one transmitted
+ *         byte per invocation. No application or protocol processing
+ *         occurs.
  */
-void USART2_IRQHandler(void)
+void serial_transport_usart2_irq_handler(void)
 {
     uint32_t status;
     uint8_t data_byte;
 
-    status = USART2->SR;
+    status = USART2->sr;
 
     if ((status & USART_SR_ERROR_MASK) != 0u)
     {
-        data_byte = (uint8_t)USART2->DR;
+        data_byte = (uint8_t)USART2->dr;
+        // Reading the data register clears the detected receive error condition.
         (void)data_byte;
-        SerialTransport_IncrementSaturatingU32(&s_uart_error_count);
-        AppEvent_PostFlagsFromIsr(APP_EVENT_FLAG_UART_ERROR);
+        serial_transport_increment_saturating_u32(&s_uart_error_count);
+        app_event_post_flags_from_isr(APP_EVENT_FLAG_UART_ERROR);
     }
     else if ((status & USART_SR_RXNE) != 0u)
     {
-        data_byte = (uint8_t)USART2->DR;
-        SerialTransport_PushRxFromIsr(data_byte);
+        data_byte = (uint8_t)USART2->dr;
+        serial_transport_push_rx_from_isr(data_byte);
     }
     else
     {
-        /* No receive work. */
+        // No receive work.
     }
 
-    if (((status & USART_SR_TXE) != 0u) && ((USART2->CR1 & USART_CR1_TXEIE) != 0u))
+    if (((status & USART_SR_TXE) != 0u) && ((USART2->cr1 & USART_CR1_TXEIE) != 0u))
     {
         if (s_tx_tail != s_tx_head)
         {
-            USART2->DR = s_tx_ring[s_tx_tail];
+            USART2->dr = s_tx_ring[s_tx_tail];
             s_tx_tail = (uint16_t)((s_tx_tail + 1u) & TX_RING_MASK);
         }
         else
         {
-            USART2->CR1 &= ~USART_CR1_TXEIE;
+            USART2->cr1 &= ~USART_CR1_TXEIE;
         }
     }
 }

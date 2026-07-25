@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.5 - 2026-07-25
+
+- Applied Embedded C Coding Rules v1.0.17 to all Product-owned C and header files.
+- Added approved File Headers, per-file copyright, and mandatory Function Headers.
+- Renamed Product-owned functions to lower snake case with module prefixes.
+- Added explicit application state-transition ownership and bounded HSI readiness polling.
+- Replaced protocol, hardware, timing, capacity, and host-test magic values with named constants.
+- Added checked transmit-result diagnostics and explicit host-test process-exit mapping.
+- Added the Global Object Register and toolchain-symbol Deviation Record.
+- Strengthened project validation for headers, comments, names, line length, prohibited APIs, protocol IDs, target metadata, and linker layout.
+- Preserved the v0.1.4 CubeIDE target and linker configuration that built with zero errors and zero warnings.
+- Updated the firmware-reported patch version to `0.1.5`.
+
 ## v0.1.4 - 2026-07-25
 
 - Corrected the GNU ld LMA diagnostic that remained in v0.1.3.

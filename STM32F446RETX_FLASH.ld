@@ -1,4 +1,4 @@
-ENTRY(Reset_Handler)
+ENTRY(startup_reset_handler)
 
 PHDRS
 {

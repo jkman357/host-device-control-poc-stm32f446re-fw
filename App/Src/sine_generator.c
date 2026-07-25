@@ -1,3 +1,16 @@
+// Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     sine_generator.c
+//
+// Purpose:
+//     Implements a deterministic one-hertz sine-wave lookup source.
+//
+// Responsibilities:
+//     - Owns the fixed 200-sample waveform table.
+//     - Maintains the module-private sample index.
+//     - Returns bounded signed 16-bit samples.
+
 #include "sine_generator.h"
 
 #include <stddef.h>
@@ -30,19 +43,45 @@ static const int16_t s_sine_samples[SINE_SAMPLE_COUNT] =
 
 static uint16_t s_sample_index;
 
-/**
- * @brief Reset the sine generator to sample zero.
+/*
+ * Function:
+ *     sine_generator_reset
+ *
+ * Purpose:
+ *     Reset the sine generator to sample zero.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
  */
-void SineGenerator_Reset(void)
+void sine_generator_reset(void)
 {
     s_sample_index = 0u;
 }
 
-/**
- * @brief Return the current sample and advance to the next sample.
- * @return Signed 16-bit sine sample with nominal amplitude 10000.
+/*
+ * Function:
+ *     sine_generator_get_next_sample
+ *
+ * Purpose:
+ *     Return the current sample and advance to the next sample.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     result:
+ *         Signed 16-bit sine sample with nominal amplitude 10000.
  */
-int16_t SineGenerator_GetNextSample(void)
+int16_t sine_generator_get_next_sample(void)
 {
     int16_t sample;
 
