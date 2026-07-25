@@ -8,7 +8,7 @@
 | Repository | `jkman357/host-device-control-poc-stm32f446re-fw` |
 | MCU implementation baseline | commit `4b1b701` |
 | Role | Device/Node firmware and shared-Protocol consumer |
-| Status | Draft MCU implementation baseline v0.2.2 |
+| Status | Draft MCU implementation baseline v0.2.3 |
 | Target board | ST NUCLEO-F446RE |
 | Target MCU | STM32F446RET6 |
 

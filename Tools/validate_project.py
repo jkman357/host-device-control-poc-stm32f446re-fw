@@ -435,6 +435,22 @@ def main() -> int:
 
     startup_text = (ROOT / "Core/Src/startup_stm32f446xx.c").read_text(encoding="utf-8")
     gor_text = (ROOT / "docs/design/Global_Object_Register.md").read_text(encoding="utf-8")
+    for token in (
+        "#define SCB_CPACR_ADDRESS",
+        "SCB_CPACR_CP10_FULL_ACCESS",
+        "SCB_CPACR_CP11_FULL_ACCESS",
+        "static void startup_enable_fpu(void)",
+        "SCB_CPACR |= SCB_CPACR_FPU_FULL_ACCESS_MASK;",
+        "startup_enable_fpu();",
+    ):
+        if token not in startup_text:
+            errors.append(f"startup source missing hard-float enable token: {token}")
+
+    reset_call_index = startup_text.find("startup_enable_fpu();")
+    main_call_index = startup_text.find("(void)main();")
+    if (reset_call_index < 0) or (main_call_index < 0) or (reset_call_index > main_call_index):
+        errors.append("startup must enable the FPU before entering main")
+
     if "// Global Object Record: GOR-STARTUP-001." not in startup_text:
         errors.append("startup vector table lacks its Global Object Record reference")
     if "GOR-STARTUP-001" not in gor_text or "g_startup_vector_table" not in gor_text:

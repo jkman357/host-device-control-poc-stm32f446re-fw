@@ -64,3 +64,7 @@ Version v0.2.2 pins the runner to Ubuntu 24.04, installs `clang`, `lld`, and `ll
 required commands, and reports a clear missing-tool diagnostic before compilation. It also updates checkout from
 `actions/checkout@v4` to the Node.js 24-based v5 action. The shared Protocol 0.1.0 contract and MCU runtime
 behavior are unchanged except for the reported firmware patch version.
+
+## v0.2.3 Cortex-M4F runtime correction
+
+The custom reset handler now grants CP10 and CP11 full access through SCB CPACR before entering `main`, followed by DSB and ISB. This closes the observed failure where non-floating-point commands completed but the first sine-wave telemetry operation faulted under the hard-float build.

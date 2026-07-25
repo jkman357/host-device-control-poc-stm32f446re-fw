@@ -73,7 +73,7 @@ this MCU revision does not emit them. The current contract does not yet allocate
 
 ## Coding-rules baseline
 
-Firmware v0.2.2 preserves the `Embedded_C_Coding_Rules.md` v1.0.17 application established at MCU commit
+Firmware v0.2.3 preserves the `Embedded_C_Coding_Rules.md` v1.0.17 application established at MCU commit
 `4b1b701`, referencing framework commit `7a68980ef5faa2e897a3574af121683d65f74638`.
 
 Applied controls include:
@@ -128,6 +128,25 @@ GitHub Actions uses a pinned Ubuntu 24.04 runner and installs `clang`, `lld`, an
 independent Cortex-M4 build. `Tools/build_with_clang.sh` checks every required executable before compiling, so a
 runner-image tool change produces a named missing-tool error rather than an unexplained shell exit code 127.
 
+## Interactive Protocol command sweep
+
+The test branch includes an interactive Python tool that exercises every implemented PC-to-MCU command and
+then displays live sine-wave telemetry until `q` or `Q` is pressed:
+
+```powershell
+py -m pip install pyserial
+py Tools\protocol_command_sweep.py --self-test
+py Tools\protocol_command_sweep.py --port COM3
+```
+
+The command order is `PING`, `GET_DEVICE_INFO`, `SET_STREAM_CONFIG`, `START_STREAM`, continuous
+`TELEMETRY_SAMPLE`, and `STOP_STREAM`. The tool verifies direct-response sequence correlation, ACK state,
+DEVICE_INFO, CRC, telemetry payloads, sample-counter gaps, sine range, and clean STOP_STREAM completion.
+Tera Term and the C# application must be closed before opening the COM port.
+
+Use `--interval-us` to choose a valid 1,000 through 60,000 microsecond stream interval and `--display-every` to
+control console output density. The default is 5,000 microseconds and one waveform row per ten samples.
+
 ## Validation
 
 ```bash
@@ -154,6 +173,10 @@ replace human review, STM32CubeIDE build evidence, or physical-board interoperab
 
 ## Status
 
-Draft MCU implementation baseline v0.2.2, derived from MCU commit `4b1b701` and aligned in code to the pinned
+Draft MCU implementation baseline v0.2.3, derived from MCU commit `4b1b701` and aligned in code to the pinned
 shared Protocol 0.1.0 contract. Software checks do not replace an STM32CubeIDE clean build, firmware download,
 PC/MCU interoperability test, and human lifecycle approval.
+
+## Cortex-M4F startup requirement
+
+The reset handler enables CP10 and CP11 before entering `main`; this is required by the hard-float build and float32 telemetry.

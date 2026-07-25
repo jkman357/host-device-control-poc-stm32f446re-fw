@@ -134,7 +134,7 @@ For `ACK`, result code is required to be `OK (0x00)`.
 | 7 | 1 | Device name length |
 | 8 | N | UTF-8 device name, maximum 32 bytes |
 
-This implementation reports device name `NUCLEO-F446RE` and firmware `0.2.2`.
+This implementation reports device name `NUCLEO-F446RE` and firmware `0.2.3`.
 
 ## TELEMETRY_SAMPLE payload
 

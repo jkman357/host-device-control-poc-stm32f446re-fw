@@ -38,3 +38,6 @@ jobs:
 
       - name: Run Python protocol self-test
         run: python3 Tools/serial_smoke_test.py --self-test
+
+      - name: Run interactive command-sweep self-test
+        run: python3 Tools/protocol_command_sweep.py --self-test

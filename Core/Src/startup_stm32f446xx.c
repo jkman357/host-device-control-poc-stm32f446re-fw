@@ -30,8 +30,14 @@ extern uint32_t _ebss;
 #define CORE_VECTOR_COUNT        (16u)
 #define STM32_IRQ_COUNT          (97u)
 #define TOTAL_VECTOR_COUNT       (CORE_VECTOR_COUNT + STM32_IRQ_COUNT)
-#define SCB_VTOR_ADDRESS         (0xE000ED08u)
-#define SCB_VTOR                 (*(volatile uint32_t *)SCB_VTOR_ADDRESS)
+#define SCB_VTOR_ADDRESS                 (0xE000ED08u)
+#define SCB_CPACR_ADDRESS                (0xE000ED88u)
+#define SCB_VTOR                         (*(volatile uint32_t *)SCB_VTOR_ADDRESS)
+#define SCB_CPACR                        (*(volatile uint32_t *)SCB_CPACR_ADDRESS)
+#define SCB_CPACR_CP10_FULL_ACCESS       (3u << 20u)
+#define SCB_CPACR_CP11_FULL_ACCESS       (3u << 22u)
+#define SCB_CPACR_FPU_FULL_ACCESS_MASK   \
+    (SCB_CPACR_CP10_FULL_ACCESS | SCB_CPACR_CP11_FULL_ACCESS)
 
 typedef void (*startup_interrupt_callback_t)(void);
 
@@ -43,6 +49,33 @@ typedef union
 
 _Static_assert(sizeof(startup_vector_entry_t) == sizeof(uint32_t),
                "startup vector entry size mismatch");
+
+/*
+ * Function:
+ *     startup_enable_fpu
+ *
+ * Purpose:
+ *     Enables full privileged and unprivileged access to the Cortex-M4F floating-point unit.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Must run before any hard-float instruction executes. The DSB and ISB
+ *     make the CPACR permission update visible before normal runtime code.
+ */
+static void startup_enable_fpu(void)
+{
+    SCB_CPACR |= SCB_CPACR_FPU_FULL_ACCESS_MASK;
+    __asm volatile ("dsb" ::: "memory");
+    __asm volatile ("isb" ::: "memory");
+}
 
 /*
  * Function:
@@ -406,6 +439,8 @@ void startup_reset_handler(void)
 {
     uint32_t *source;
     uint32_t *destination;
+
+    startup_enable_fpu();
 
     SCB_VTOR = (uint32_t)(uintptr_t)&g_startup_vector_table[0];
     __asm volatile ("dsb" ::: "memory");

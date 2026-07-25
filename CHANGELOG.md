@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.3 - 2026-07-25
+
+- Enabled Cortex-M4F CP10 and CP11 access in the custom reset path before entering `main`.
+- Fixed the runtime fault that occurred on the first hard-float sine-wave telemetry sample.
+- Added DSB/ISB ordering after the CPACR update.
+- Updated the interactive sweep to process one receive window before honoring immediate q/Q input.
+- Added validator enforcement that FPU access is enabled before `main`.
+- Updated the firmware-reported version to `0.2.3`; shared wire Protocol 0.1.0 is unchanged.
+
+## Test tooling - 2026-07-25
+
+- Added an interactive Python sweep for all implemented PC-to-MCU commands.
+- Added continuous TELEMETRY_SAMPLE decoding and ASCII sine-wave display.
+- Added immediate q/Q termination with confirmed STOP_STREAM ACK before closing the port.
+- Added sample-gap, CRC, format, status-flag, and sine-range statistics.
+- Kept firmware version 0.2.2 and shared wire Protocol 0.1.0 unchanged.
+
 ## v0.2.2 - 2026-07-25
 
 - Fixed GitHub Actions exit code 127 in the Cortex-M4 Clang build step.
