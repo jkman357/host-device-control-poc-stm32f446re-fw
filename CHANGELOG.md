@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.2 - 2026-07-25
+
+- Fixed GitHub Actions exit code 127 in the Cortex-M4 Clang build step.
+- Installed `clang`, `lld`, and `llvm` explicitly on the pinned Ubuntu 24.04 runner.
+- Added explicit discovery and diagnostics for Clang, LLD, and LLVM objcopy tools.
+- Updated the checkout action from Node.js 20-based `actions/checkout@v4` to `actions/checkout@v5`.
+- Added validator checks for the CI toolchain contract and deprecated checkout regression.
+- Recorded the successful v0.2.1 STM32CubeIDE build with zero errors and zero warnings.
+- Updated the firmware-reported version to `0.2.2`; wire Protocol 0.1.0 is unchanged.
+
 ## v0.2.1 - 2026-07-25
 
 - Removed two redundant TIM6 upper-bound comparisons that were always false for a `uint16_t` period.

@@ -73,7 +73,7 @@ this MCU revision does not emit them. The current contract does not yet allocate
 
 ## Coding-rules baseline
 
-Firmware v0.2.1 preserves the `Embedded_C_Coding_Rules.md` v1.0.17 application established at MCU commit
+Firmware v0.2.2 preserves the `Embedded_C_Coding_Rules.md` v1.0.17 application established at MCU commit
 `4b1b701`, referencing framework commit `7a68980ef5faa2e897a3574af121683d65f74638`.
 
 Applied controls include:
@@ -122,6 +122,12 @@ Interrupt handlers only move bytes, acknowledge hardware, update bounded counter
 command handling, state transitions, telemetry construction, timeout handling, and sine generation execute in
 main context.
 
+## Continuous integration
+
+GitHub Actions uses a pinned Ubuntu 24.04 runner and installs `clang`, `lld`, and `llvm` explicitly before the
+independent Cortex-M4 build. `Tools/build_with_clang.sh` checks every required executable before compiling, so a
+runner-image tool change produces a named missing-tool error rather than an unexplained shell exit code 127.
+
 ## Validation
 
 ```bash
@@ -148,6 +154,6 @@ replace human review, STM32CubeIDE build evidence, or physical-board interoperab
 
 ## Status
 
-Draft MCU implementation baseline v0.2.1, derived from MCU commit `4b1b701` and aligned in code to the pinned
+Draft MCU implementation baseline v0.2.2, derived from MCU commit `4b1b701` and aligned in code to the pinned
 shared Protocol 0.1.0 contract. Software checks do not replace an STM32CubeIDE clean build, firmware download,
 PC/MCU interoperability test, and human lifecycle approval.

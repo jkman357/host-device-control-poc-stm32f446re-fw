@@ -31,6 +31,8 @@ REQUIRED_FILES = (
     "NOTICE.md",
     "Makefile",
     "STM32F446RETX_FLASH.ld",
+    ".github/workflows/validate.yml",
+    "Tools/build_with_clang.sh",
     "docs/design/Global_Object_Register.md",
     "docs/design/Deviation_Records.md",
     "docs/compliance/Coding_Rules_Application_Report.md",
@@ -318,6 +320,37 @@ def validate_protocol_authority(errors: list[str]) -> int:
     return len(vectors)
 
 
+
+def validate_ci_configuration(errors: list[str]) -> None:
+    workflow_text = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    workflow_tokens = (
+        "runs-on: ubuntu-24.04",
+        "uses: actions/checkout@v5",
+        "sudo apt-get install --yes --no-install-recommends clang lld llvm",
+        "command -v llvm-objcopy",
+        "command -v llvm-size",
+        "run: bash Tools/build_with_clang.sh",
+    )
+    for token in workflow_tokens:
+        if token not in workflow_text:
+            errors.append(f"CI workflow missing required token: {token}")
+
+    build_script_text = (ROOT / "Tools/build_with_clang.sh").read_text(encoding="utf-8")
+    script_tokens = (
+        'CLANG="${CLANG:-clang}"',
+        'LLD="${LLD:-ld.lld}"',
+        'LLVM_OBJCOPY="${LLVM_OBJCOPY:-llvm-objcopy}"',
+        'require_tool "$LLVM_OBJCOPY"',
+        '"$LLVM_OBJCOPY" -O binary',
+    )
+    for token in script_tokens:
+        if token not in build_script_text:
+            errors.append(f"Clang build script missing required token: {token}")
+
+    if "actions/checkout@v4" in workflow_text:
+        errors.append("CI workflow uses deprecated Node.js 20 checkout action")
+
+
 def main() -> int:
     errors: list[str] = []
     for relative_path in REQUIRED_FILES:
@@ -364,6 +397,7 @@ def main() -> int:
         errors.append("protocol header contains duplicate Message IDs")
 
     vector_count = validate_protocol_authority(errors)
+    validate_ci_configuration(errors)
 
     protocol_header_text = (ROOT / "Protocol/Inc/protocol.h").read_text(encoding="utf-8")
     for token in (

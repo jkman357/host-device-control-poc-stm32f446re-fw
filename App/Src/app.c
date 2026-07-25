@@ -28,7 +28,7 @@
 
 #define FW_VERSION_MAJOR                       (0u)
 #define FW_VERSION_MINOR                       (2u)
-#define FW_VERSION_PATCH                       (1u)
+#define FW_VERSION_PATCH                       (2u)
 #define MICROSECONDS_PER_SECOND                (1000000u)
 #define LED_TOGGLE_PERIOD_US                   (500000u)
 

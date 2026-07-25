@@ -4,18 +4,37 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install LLVM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang lld llvm
+          command -v clang
+          command -v ld.lld
+          command -v llvm-objcopy
+          command -v llvm-size
+
       - name: Validate repository
         run: python3 Tools/validate_project.py
+
       - name: Test GNU ld linker layout
         run: python3 Tools/test_linker_layout.py
+
       - name: Build and run host protocol test
         run: make host-test
+
       - name: Build Cortex-M4 image with Clang
         run: bash Tools/build_with_clang.sh
+
       - name: Run Python protocol self-test
         run: python3 Tools/serial_smoke_test.py --self-test

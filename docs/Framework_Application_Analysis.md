@@ -55,11 +55,11 @@ behavior. It does not claim authority to change them. Buffer size, register conf
 and internal diagnostics remain MCU implementation choices as long as they preserve wire behavior.
 
 The contract declares `DEVICE_STATUS` and `ERROR_REPORT`, but does not fully define their emission semantics.
-Their IDs remain reserved; v0.2.1 does not invent MCU-local triggers or error-code meanings.
+Their IDs remain reserved; v0.2.2 does not invent MCU-local triggers or error-code meanings.
 
 ## Known gaps
 
-- No v0.2.1 STM32CubeIDE clean-build evidence is included yet.
+- The v0.2.1 STM32CubeIDE clean build completed with zero errors and zero warnings; v0.2.2 retains that firmware configuration.
 - No target-board execution or PC interoperability evidence is included.
 - No measured ISR latency, jitter, sustained throughput, or packet-loss acceptance result is included.
 - No approved PC compatible commit is pinned.

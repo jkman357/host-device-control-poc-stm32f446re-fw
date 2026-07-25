@@ -5,7 +5,7 @@
 - Coding standard: `Embedded_C_Coding_Rules.md` v1.0.17, Final Baseline
 - Framework reference commit: `7a68980ef5faa2e897a3574af121683d65f74638`
 - Coding-rules application baseline: MCU commit `4b1b701`
-- Current firmware implementation baseline: v0.2.1
+- Current firmware implementation baseline: v0.2.2
 
 ## Applied controls
 
@@ -26,7 +26,7 @@ The repository applies the following high-value mechanical and implementation co
 
 ## Protocol-change review
 
-The v0.2.0 wire-protocol replacement remains intact in v0.2.1. The Coding Rules controls continue to cover
+The v0.2.0 wire-protocol replacement remains intact in v0.2.2. The Coding Rules controls continue to cover
 framing, Message IDs, payloads, timer configuration, and telemetry representation. The mechanical validator still checks all 24
 Product-owned C/header files and rejects reintroduction of legacy wire markers.
 

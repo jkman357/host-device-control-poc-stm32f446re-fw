@@ -44,7 +44,7 @@
 
 - **Date:** 2026-07-25
 - **Status:** Applied
-- **Decision:** Retain the declared Message IDs and payload definitions but do not emit these messages in v0.2.1.
+- **Decision:** Retain the declared Message IDs and payload definitions but do not emit these messages in v0.2.2.
 - **Rationale:** Protocol 0.1.0 does not define a `DEVICE_STATUS` trigger or an `ERROR_REPORT` error-code allocation and emission policy.
 - **Consequence:** Adding those behaviors requires a contract-first change rather than an MCU-only interpretation.
 

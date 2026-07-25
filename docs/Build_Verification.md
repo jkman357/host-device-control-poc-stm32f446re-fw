@@ -38,8 +38,9 @@ contract. Software verification includes:
 - independent Cortex-M4 Clang compile/link;
 - GNU ld linker-layout regression.
 
-The remaining confirmation is a zero-warning STM32CubeIDE clean build, firmware download, shared PC application
-interoperability, sustained-rate measurement, pinned compatible commits, and human lifecycle approval.
+The v0.2.1 STM32CubeIDE clean build completed with zero errors and zero warnings. Remaining confirmation includes
+firmware download, shared PC application interoperability, sustained-rate measurement, pinned compatible commits,
+and human lifecycle approval.
 
 ## v0.2.1 zero-warning timer-range correction
 
@@ -49,4 +50,17 @@ with a hardware maximum of 65,535 microseconds is always false. Version v0.2.1 r
 bound check. The meaningful hardware guard remains `period_us >= 1`, while the application layer continues to
 enforce the shared Protocol range of 1,000 through 60,000 microseconds before calling the platform layer.
 
-The remaining confirmation is a clean v0.2.1 STM32CubeIDE build showing zero errors and zero warnings.
+The v0.2.1 STM32CubeIDE 2.2.0 Debug build completed with zero errors and zero warnings.
+
+## v0.2.2 GitHub Actions toolchain correction
+
+The v0.2.1 firmware completed a local STM32CubeIDE 2.2.0 Debug build with zero errors and zero warnings. The
+GitHub Actions run for commit `b0c9045` nevertheless failed in the independent Cortex-M4 Clang step with exit
+code 127. Repository validation, GNU ld layout testing, and the host Protocol test completed before that step.
+The CI script invoked `llvm-objcopy` without first establishing that the Ubuntu runner supplied the LLVM binary
+utilities.
+
+Version v0.2.2 pins the runner to Ubuntu 24.04, installs `clang`, `lld`, and `llvm` explicitly, verifies the
+required commands, and reports a clear missing-tool diagnostic before compilation. It also updates checkout from
+`actions/checkout@v4` to the Node.js 24-based v5 action. The shared Protocol 0.1.0 contract and MCU runtime
+behavior are unchanged except for the reported firmware patch version.
