@@ -1,0 +1,13 @@
+# STM32CubeIDE generated output
+/Debug/
+/Release/
+/build/
+*.launch
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

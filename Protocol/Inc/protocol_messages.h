@@ -1,0 +1,40 @@
+#ifndef PROTOCOL_MESSAGES_H
+#define PROTOCOL_MESSAGES_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define PROTOCOL_MESSAGE_PING_REQUEST             (0x0001u)
+#define PROTOCOL_MESSAGE_GET_DEVICE_INFO_REQUEST  (0x0002u)
+#define PROTOCOL_MESSAGE_ERROR_RESPONSE            (0x00E0u)
+#define PROTOCOL_MESSAGE_PING_RESPONSE             (0x0081u)
+#define PROTOCOL_MESSAGE_DEVICE_INFO_RESPONSE      (0x0082u)
+
+#define PROTOCOL_MESSAGE_START_STREAM_REQUEST      (0x0100u)
+#define PROTOCOL_MESSAGE_START_STREAM_RESPONSE     (0x0101u)
+#define PROTOCOL_MESSAGE_STOP_STREAM_REQUEST       (0x0102u)
+#define PROTOCOL_MESSAGE_STOP_STREAM_RESPONSE      (0x0103u)
+
+#define PROTOCOL_MESSAGE_TELEMETRY                  (0x2000u)
+
+#define PROTOCOL_FLAG_REQUEST                    (0x01u)
+#define PROTOCOL_FLAG_RESPONSE                   (0x02u)
+#define PROTOCOL_FLAG_TELEMETRY                  (0x04u)
+
+typedef enum
+{
+    PROTOCOL_COMMAND_RESULT_OK = 0u,
+    PROTOCOL_COMMAND_RESULT_INVALID_STATE = 1u,
+    PROTOCOL_COMMAND_RESULT_UNSUPPORTED = 2u,
+    PROTOCOL_COMMAND_RESULT_INVALID_PAYLOAD = 3u,
+    PROTOCOL_COMMAND_RESULT_TRANSPORT_BUSY = 4u
+} protocol_command_result_t;
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PROTOCOL_MESSAGES_H */
