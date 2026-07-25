@@ -64,3 +64,11 @@ Version v0.2.2 pins the runner to Ubuntu 24.04, installs `clang`, `lld`, and `ll
 required commands, and reports a clear missing-tool diagnostic before compilation. It also updates checkout from
 `actions/checkout@v4` to the Node.js 24-based v5 action. The shared Protocol 0.1.0 contract and MCU runtime
 behavior are unchanged except for the reported firmware patch version.
+
+
+## dcffbd2 USART2 loopback diagnostic
+
+This temporary derivative bypasses TIM6, Protocol parsing, command handling, and telemetry. The build shall still
+pass the repository, Coding Rules, Protocol regression, linker-layout, and independent Cortex-M4 checks. Physical
+acceptance requires Tera Term at 115200, 8-N-1, no flow control, and local echo disabled. Typing `a` and `b` shall
+return the same bytes through the MCU, and LD2 shall toggle after each successfully queued echo byte.

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.2-loopback-test - 2026-07-25
+
+- Derived a temporary USART2 character-loopback diagnostic from commit `dcffbd2`.
+- Bypassed Shared Protocol parsing, command handling, TIM6 sampling, and telemetry at runtime.
+- Reused the interrupt-driven USART2 RX/TX rings and main-context event dispatcher.
+- Echoed every received byte without modification and toggled LD2 after successful TX enqueue.
+- Added Tera Term setup, interpretation, and breakpoint-based verification guidance.
+- Retained Shared Protocol sources and regression tests without claiming Protocol runtime compatibility.
+
 ## v0.2.2 - 2026-07-25
 
 - Fixed GitHub Actions exit code 127 in the Cortex-M4 Clang build step.

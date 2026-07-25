@@ -30,3 +30,15 @@ Flow:      none
 ## Clock assumption
 
 This firmware explicitly selects the internal 16 MHz HSI clock and leaves AHB/APB prescalers at 1. No external oscillator or PLL is required.
+
+
+## Tera Term loopback settings
+
+```text
+Terminal:   Tera Term
+Local echo: OFF
+New-line:   any consistent setting for this byte-level test
+```
+
+With local echo disabled, a displayed character is evidence that the byte returned through the MCU. If local
+echo is enabled, each typed character may appear twice.

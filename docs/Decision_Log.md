@@ -55,3 +55,14 @@
 - **Decision:** Run TIM6 continuously and permit `SET_STREAM_CONFIG` only in IDLE.
 - **Rationale:** The same timer supports device time, parser timeout progress, heartbeat timing, and stream scheduling without adding a second time base.
 - **Consequence:** `device_tick_us` represents modulo-`uint32` device time, not time since stream start. START_STREAM resets stream counters and phase but not device time.
+
+
+## 2026-07-25 — Temporary USART2 character-loopback diagnostic
+
+- **Source baseline:** MCU commit `dcffbd2`.
+- **Decision:** Temporarily bypass TIM6, Shared Protocol parsing, commands, and telemetry.
+- **Reason:** Isolate the physical and software serial path before resuming PC application interoperability.
+- **Runtime path:** USART2 ISR -> RX ring -> main-context echo -> TX ring -> USART2 ISR.
+- **Acceptance:** Tera Term local echo disabled; typing `a` and `b` returns exactly the same characters.
+- **Scope boundary:** This diagnostic does not alter the system Protocol authority and must not be released as a
+  Protocol-compatible MCU baseline.
