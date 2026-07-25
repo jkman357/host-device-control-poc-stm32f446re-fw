@@ -4,10 +4,10 @@
 //     device_state.h
 //
 // Purpose:
-//     Defines the externally visible device operating states.
+//     Defines the authoritative externally visible device states.
 //
 // Public Contract:
-//     - Provides the finite device-state type used by the application and protocol.
+//     - Mirrors the shared Protocol state_model values.
 //     - Does not expose mutable application state.
 
 #ifndef DEVICE_STATE_H
@@ -21,9 +21,8 @@ extern "C" {
 
 typedef enum
 {
-    DEVICE_STATE_IDLE = 0u,
-    DEVICE_STATE_STREAMING = 1u,
-    DEVICE_STATE_FAULT = 2u
+    DEVICE_STATE_IDLE = 0x00u,
+    DEVICE_STATE_STREAMING = 0x01u
 } device_state_t;
 
 #ifdef __cplusplus

@@ -24,6 +24,10 @@ The package was structured against the current document identities observed on t
 
 The commit above is the immutable framework source identity used for this generated package. Before adoption, a human shall verify that the intended reference is still this commit or deliberately update the analysis to a newer commit.
 
+## Authority separation
+
+The framework defines engineering method, role boundaries, review criteria, and Protocol-document structure. It does not own this PoC's concrete wire values. The concrete project-level wire authority is `host-device-control-poc-system/protocol/protocol.yaml`; the MCU and PC repositories are consumers of that contract.
+
 ## Application boundary
 
 This repository applies only the portions needed for a single-node, connection-bound, UART PoC:

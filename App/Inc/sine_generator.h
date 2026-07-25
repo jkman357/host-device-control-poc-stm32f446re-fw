@@ -4,12 +4,12 @@
 //     sine_generator.h
 //
 // Purpose:
-//     Defines the public contract for deterministic sine-wave sample generation.
+//     Defines the public deterministic sine-wave sample contract.
 //
 // Public Contract:
-//     - Resets the waveform sequence.
-//     - Returns one bounded signed sample per call.
-//     - Keeps waveform data and indexing private to sine_generator.c.
+//     - Returns one IEEE-754 binary32 sine value for a microsecond phase.
+//     - Uses a one-second period and one-millisecond lookup resolution.
+//     - Retains no mutable generator state.
 
 #ifndef SINE_GENERATOR_H
 #define SINE_GENERATOR_H
@@ -22,40 +22,23 @@ extern "C" {
 
 /*
  * Function:
- *     sine_generator_reset
+ *     sine_generator_get_sample
  *
  * Purpose:
- *     Reset the sine generator to sample zero.
+ *     Returns the one-hertz sine value for a microsecond phase.
  *
  * Input Parameters:
- *     None.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- */
-void sine_generator_reset(void);
-
-/*
- * Function:
- *     sine_generator_get_next_sample
- *
- * Purpose:
- *     Return the current sample and advance to the next sample.
- *
- * Input Parameters:
- *     None.
+ *     phase_us:
+ *         Supplies the phase in microseconds. Values are reduced modulo one second.
  *
  * Output Parameters:
  *     None.
  *
  * Return Value:
  *     result:
- *         Signed 16-bit sine sample with nominal amplitude 10000.
+ *         IEEE-754 binary32 sine value in the inclusive range minus one to one.
  */
-int16_t sine_generator_get_next_sample(void);
+float sine_generator_get_sample(uint32_t phase_us);
 
 #ifdef __cplusplus
 }

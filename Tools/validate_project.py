@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -11,6 +13,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SUFFIXES = {".c", ".h"}
 COPYRIGHT = "// Copyright (c) 2026 Ray Yang. All rights reserved."
+PROTOCOL_AUTHORITY_SHA256 = "7ff8db3a1ed669407e0d4cada2a78b212ea3c7bccdf371f232a2689a02e7c56e"
+
 FUNCTION_FIELDS = (
     "Function:",
     "Purpose:",
@@ -40,6 +44,9 @@ REQUIRED_FILES = (
     "Protocol/Src/protocol.c",
     "Transport/Src/serial_transport.c",
     "Protocol/Spec/Host_Device_Control_PoC_protocol.yaml",
+    "Protocol/TestVectors/protocol-v0.1.0-vectors.json",
+    "Protocol/TestVectors/README.md",
+    "docs/Protocol_Authority_Record.md",
     "Tests/protocol_roundtrip_test.c",
 )
 PROHIBITED_PATTERNS = {
@@ -189,6 +196,128 @@ def parse_yaml_message_ids(path: Path) -> dict[str, int]:
     return result
 
 
+
+def crc16_ccitt_false(data: bytes) -> int:
+    crc = 0xFFFF
+    for value in data:
+        crc ^= value << 8
+        for _ in range(8):
+            if (crc & 0x8000) != 0:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
+
+def encode_protocol_vector(message_id: int, sequence: int, payload: bytes) -> bytes:
+    body = bytes((0x01, message_id))
+    body += sequence.to_bytes(2, byteorder="little")
+    body += len(payload).to_bytes(2, byteorder="little")
+    body += payload
+    crc = crc16_ccitt_false(body)
+    return bytes((0xA5, 0x5A)) + body + crc.to_bytes(2, byteorder="little")
+
+
+def validate_protocol_authority(errors: list[str]) -> int:
+    protocol_path = ROOT / "Protocol/Spec/Host_Device_Control_PoC_protocol.yaml"
+    vector_path = ROOT / "Protocol/TestVectors/protocol-v0.1.0-vectors.json"
+
+    protocol_bytes = protocol_path.read_bytes()
+    actual_sha = hashlib.sha256(protocol_bytes).hexdigest()
+    if actual_sha != PROTOCOL_AUTHORITY_SHA256:
+        errors.append(
+            "Protocol authority snapshot SHA-256 differs from the pinned system-repository contract"
+        )
+
+    protocol_text = protocol_bytes.decode("utf-8")
+    required_tokens = (
+        "version: 0.1.0",
+        "wire_version: 0x01",
+        "status: candidate_for_alignment",
+        "repository: host-device-control-poc-system",
+        "path: protocol/protocol.yaml",
+        "rule: specification_precedes_implementation",
+        "maximum_payload_size_bytes: 1024",
+        "partial_frame: 250",
+        "float32: ieee_754_binary32_little_endian",
+    )
+    for token in required_tokens:
+        if token not in protocol_text:
+            errors.append(f"Protocol authority snapshot missing required token: {token}")
+
+    try:
+        vector_document = json.loads(vector_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"invalid shared vector JSON: {exc}")
+        return 0
+
+    if vector_document.get("protocol") != "host-device-control-poc":
+        errors.append("shared vectors identify the wrong protocol")
+    if vector_document.get("protocol_version") != "0.1.0":
+        errors.append("shared vectors identify the wrong protocol version")
+    if vector_document.get("wire_version") != 1:
+        errors.append("shared vectors identify the wrong wire version")
+    if vector_document.get("contract_status") != "candidate_for_alignment":
+        errors.append("shared vectors identify the wrong contract status")
+
+    vectors = vector_document.get("vectors")
+    if not isinstance(vectors, list):
+        errors.append("shared vectors do not contain a vector list")
+        return 0
+
+    covered_ids: set[int] = set()
+    names: set[str] = set()
+    for index, vector in enumerate(vectors):
+        if not isinstance(vector, dict):
+            errors.append(f"shared vector {index} is not an object")
+            continue
+        try:
+            name = str(vector["name"])
+            message_id = int(str(vector["message_id"]), 16)
+            sequence = int(vector["sequence"])
+            payload = bytes.fromhex(str(vector["payload_hex"]))
+            expected_frame = bytes.fromhex(str(vector["frame_hex"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            errors.append(f"shared vector {index} has invalid fields: {exc}")
+            continue
+
+        if name in names:
+            errors.append(f"duplicate shared vector name: {name}")
+        names.add(name)
+        if not (0 <= message_id <= 0xFF):
+            errors.append(f"shared vector {name} message ID exceeds uint8")
+            continue
+        if not (0 <= sequence <= 0xFFFF):
+            errors.append(f"shared vector {name} sequence exceeds uint16")
+            continue
+        if len(payload) > 1024:
+            errors.append(f"shared vector {name} payload exceeds 1024 bytes")
+            continue
+
+        actual_frame = encode_protocol_vector(message_id, sequence, payload)
+        if actual_frame != expected_frame:
+            errors.append(f"shared vector {name} does not match framing or CRC rules")
+        covered_ids.add(message_id)
+
+    required_coverage = {0x01, 0x03, 0x04, 0x80, 0x90}
+    if not required_coverage.issubset(covered_ids):
+        errors.append("shared vectors lack command, response, configuration, or telemetry coverage")
+
+    authority_record = (ROOT / "docs/Protocol_Authority_Record.md").read_text(encoding="utf-8")
+    for token in (
+        "host-device-control-poc-system",
+        "protocol/protocol.yaml",
+        "0.1.0",
+        "candidate_for_alignment",
+        PROTOCOL_AUTHORITY_SHA256,
+        "4b1b701",
+    ):
+        if token not in authority_record:
+            errors.append(f"Protocol Authority Record missing token: {token}")
+
+    return len(vectors)
+
+
 def main() -> int:
     errors: list[str] = []
     for relative_path in REQUIRED_FILES:
@@ -212,6 +341,12 @@ def main() -> int:
             if re.search(pattern, text):
                 errors.append(f"{relative}: prohibited {description}")
 
+    platform_text = (ROOT / "Platform/Src/platform.c").read_text(encoding="utf-8")
+    if "TIM6_PERIOD_MAX_US" in platform_text:
+        errors.append(
+            "Platform/Src/platform.c: redundant uint16 TIM6 upper-bound guard reintroduced"
+        )
+
     if list(ROOT.rglob("*.ioc")):
         errors.append("unexpected .ioc file in register-level baseline")
 
@@ -227,6 +362,42 @@ def main() -> int:
         errors.append("protocol Message IDs differ between C and YAML")
     if len(set(c_ids.values())) != len(c_ids):
         errors.append("protocol header contains duplicate Message IDs")
+
+    vector_count = validate_protocol_authority(errors)
+
+    protocol_header_text = (ROOT / "Protocol/Inc/protocol.h").read_text(encoding="utf-8")
+    for token in (
+        "#define PROTOCOL_MAX_PAYLOAD_LENGTH          (1024u)",
+        "#define PROTOCOL_FRAME_OVERHEAD_LENGTH       (10u)",
+        "#define PROTOCOL_PARTIAL_FRAME_TIMEOUT_US    (250000u)",
+        "uint8_t message_id;",
+        "uint16_t payload_length;",
+    ):
+        if token not in protocol_header_text:
+            errors.append(f"protocol implementation header missing authoritative token: {token}")
+
+    legacy_markers = {
+        "0x2000": "legacy 16-bit telemetry Message ID",
+        "PING_RESPONSE": "legacy dedicated PING response",
+        "START_STREAM_RESPONSE": "legacy dedicated START response",
+        "STOP_STREAM_RESPONSE": "legacy dedicated STOP response",
+        "PROTOCOL_FLAG_REQUEST": "legacy flags field",
+    }
+    legacy_files = (
+        ROOT / "README.md",
+        ROOT / "docs/Protocol.md",
+        ROOT / "docs/Architecture.md",
+        ROOT / "docs/Project_Input.md",
+        ROOT / "docs/Decision_Log.md",
+        ROOT / "docs/Verification_Plan.md",
+        ROOT / "Protocol/Inc/protocol_messages.h",
+        ROOT / "App/Src/app.c",
+    )
+    for legacy_file in legacy_files:
+        legacy_text = legacy_file.read_text(encoding="utf-8")
+        for marker, description in legacy_markers.items():
+            if marker in legacy_text:
+                errors.append(f"{legacy_file.relative_to(ROOT)}: contains {description}")
 
     startup_text = (ROOT / "Core/Src/startup_stm32f446xx.c").read_text(encoding="utf-8")
     gor_text = (ROOT / "docs/design/Global_Object_Register.md").read_text(encoding="utf-8")
@@ -251,7 +422,10 @@ def main() -> int:
             print(f"- {error}")
         return 1
 
-    print(f"validation: PASS ({len(files)} Product-owned C/header files, {len(c_ids)} messages)")
+    print(
+        f"validation: PASS ({len(files)} Product-owned C/header files, "
+        f"{len(c_ids)} messages, {vector_count} shared vectors)"
+    )
     return 0
 
 

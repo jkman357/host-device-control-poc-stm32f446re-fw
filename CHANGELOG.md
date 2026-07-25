@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.1 - 2026-07-25
+
+- Removed two redundant TIM6 upper-bound comparisons that were always false for a `uint16_t` period.
+- Preserved the hardware-valid period domain of 1 through 65,535 microseconds.
+- Preserved the shared Protocol range of 1,000 through 60,000 microseconds at the application boundary.
+- Added a repository regression check that rejects reintroduction of the redundant platform upper-bound guard.
+- Updated the firmware-reported version to `0.2.1`.
+- Superseded the v0.2.0 STM32CubeIDE result of zero errors and two warnings.
+
+## v0.2.0 - 2026-07-25
+
+- Replaced the MCU-local wire format with the pinned system-repository Protocol 0.1.0 contract.
+- Changed Message ID to `uint8`, payload length to `uint16`, removed the flags field, and raised maximum payload to 1024 bytes.
+- Added the 250 ms partial-frame timeout and decodable unsupported-version NACK behavior.
+- Implemented shared `PING`, `GET_DEVICE_INFO`, `SET_STREAM_CONFIG`, `START_STREAM`, and `STOP_STREAM` commands.
+- Implemented shared `ACK`, `NACK`, `DEVICE_INFO`, and `TELEMETRY_SAMPLE` messages.
+- Replaced integer telemetry with `uint32` sample counter, `uint32` device tick, IEEE-754 float32 sine value, and `uint16` status flags.
+- Added configurable 1,000–60,000 microsecond TIM6 sampling with a 5,000 microsecond default.
+- Added exact shared JSON vectors and independent C/Python byte-level tests.
+- Added a Protocol Authority Record and SHA-256 drift check for the pinned YAML snapshot.
+- Preserved the v1.0.17 Embedded C Coding Rules application from MCU commit `4b1b701`.
+- Reserved `DEVICE_STATUS` and `ERROR_REPORT` without inventing undefined emission semantics.
+
 ## v0.1.5 - 2026-07-25
 
 - Applied Embedded C Coding Rules v1.0.17 to all Product-owned C and header files.

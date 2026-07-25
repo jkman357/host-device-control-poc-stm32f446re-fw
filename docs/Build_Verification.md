@@ -24,3 +24,29 @@ The v0.1.2 CubeIDE build completed the ELF but GNU ld emitted `section ._user_he
 ## v0.1.4 GNU ld NOLOAD correction
 
 The v0.1.3 design still assigned `.bss` and `._user_heap_stack` to a dedicated `ram` `PT_LOAD` program header. GNU ld inherited the preceding Flash load-address progression for that header, so the output still showed `.bss` with a Flash LMA and emitted `section ._user_heap_stack lma ... adjusted ...`. Version v0.1.4 removes the `ram` loadable program header and assigns both `NOLOAD` sections to `:NONE`. They retain their RAM VMA, have RAM-equivalent LMA in section inspection, are not programmed from the image, and are initialized only by startup code or CPU stack use.
+
+## v0.2.0 shared Protocol implementation
+
+Version v0.2.0 replaces the earlier MCU-local wire format with the pinned system-repository Protocol 0.1.0
+contract. Software verification includes:
+
+- exact SHA-256 validation of the authoritative YAML snapshot;
+- equality of all YAML and C Message IDs;
+- validation of the one-byte Message ID, two-byte sequence, two-byte length, 1024-byte payload, and 250 ms timeout;
+- exact C and Python reproduction of five shared vectors, including CRC;
+- command/state/result implementation checks through review and host tests;
+- independent Cortex-M4 Clang compile/link;
+- GNU ld linker-layout regression.
+
+The remaining confirmation is a zero-warning STM32CubeIDE clean build, firmware download, shared PC application
+interoperability, sustained-rate measurement, pinned compatible commits, and human lifecycle approval.
+
+## v0.2.1 zero-warning timer-range correction
+
+The STM32CubeIDE 2.2.0 build of v0.2.0 completed with zero errors and two `-Wtype-limits` warnings in
+`platform_start_sample_timer` and `platform_set_sample_period_us`. The parameter is `uint16_t`, so comparing it
+with a hardware maximum of 65,535 microseconds is always false. Version v0.2.1 removes only that redundant upper
+bound check. The meaningful hardware guard remains `period_us >= 1`, while the application layer continues to
+enforce the shared Protocol range of 1,000 through 60,000 microseconds before calling the platform layer.
+
+The remaining confirmation is a clean v0.2.1 STM32CubeIDE build showing zero errors and zero warnings.

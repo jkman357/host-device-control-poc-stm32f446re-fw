@@ -1,10 +1,17 @@
-# Binary Protocol v0.1.0
+# Shared Binary Protocol 0.1.0 — MCU Implementation Summary
 
-The authoritative project definition is `Protocol/Spec/Host_Device_Control_PoC_protocol.yaml`. This document is the human-readable implementation summary.
+The system repository's `protocol/protocol.yaml` is the wire-level authority. The copy under
+`Protocol/Spec/Host_Device_Control_PoC_protocol.yaml` is a pinned snapshot used to implement and test this MCU
+revision. See `Protocol_Authority_Record.md` for its SHA-256 and lifecycle boundary.
 
-## Byte order
+## Encoding and transport
 
-All multi-byte integers are little-endian.
+- UART profile: 115200 bps, 8 data bits, no parity, 1 stop bit, no flow control
+- Byte order: little-endian
+- Text encoding: UTF-8
+- Float encoding: IEEE-754 binary32, little-endian
+- Maximum payload: 1024 bytes
+- Partial-frame timeout: 250 ms
 
 ## Frame
 
@@ -13,141 +20,165 @@ All multi-byte integers are little-endian.
 | 0 | 1 | SOF0 = `0xA5` |
 | 1 | 1 | SOF1 = `0x5A` |
 | 2 | 1 | Wire version = `0x01` |
-| 3 | 2 | Message ID (`uint16`) |
-| 5 | 1 | Flags |
-| 6 | 1 | Payload length, 0–48 |
-| 7 | 2 | Sequence (`uint16`) |
-| 9 | N | Payload |
-| 9+N | 2 | CRC-16/CCITT-FALSE |
+| 3 | 1 | Message ID (`uint8`) |
+| 4 | 2 | Sequence (`uint16`, little-endian) |
+| 6 | 2 | Payload length (`uint16`, little-endian) |
+| 8 | N | Payload, 0–1024 bytes |
+| 8+N | 2 | CRC16 (`uint16`, little-endian) |
 
-The total frame length is `11 + payload_length` bytes.
+Total frame length is `10 + payload_length` bytes. There is no flags field.
 
-CRC input starts at `Wire version` and ends at the final payload byte. SOF and received CRC bytes are not included.
+CRC input begins with `version` and ends at the final payload byte. SOF and the stored CRC are excluded.
 
 ```text
-Polynomial: 0x1021
-Initial:    0xFFFF
-RefIn:      false
-RefOut:     false
-XorOut:     0x0000
-Check:      CRC("123456789") = 0x29B1
+Algorithm:   CRC-16/CCITT-FALSE
+Polynomial:  0x1021
+Initial:     0xFFFF
+RefIn:       false
+RefOut:      false
+XorOut:      0x0000
+Check:       CRC("123456789") = 0x29B1
 ```
 
-## Flags
+## Sequence rules
 
-A request is accepted only when its flags byte is exactly `0x01`.
+- PC command sequence is a nonzero `uint16`.
+- PC allocation increments monotonically and wraps from `0xFFFF` to `1`.
+- A direct MCU response copies the request sequence.
+- Unsolicited MCU messages use an independent `uint16` sequence.
+- Telemetry loss detection primarily uses `TELEMETRY_SAMPLE.sample_counter`, a wrapping `uint32`.
 
-| Value | Meaning |
+## State model
+
+| State | Value |
+|---|---:|
+| `idle` | `0x00` |
+| `streaming` | `0x01` |
+
+`START_STREAM` is valid only from IDLE. `STOP_STREAM` is valid only from STREAMING. Invalid transitions return
+`NACK/INVALID_STATE`.
+
+## Message IDs
+
+| ID | Name | Direction | MCU behavior in this revision |
+|---:|---|---|---|
+| `0x01` | `PING` | PC → MCU | Implemented |
+| `0x02` | `GET_DEVICE_INFO` | PC → MCU | Implemented |
+| `0x03` | `SET_STREAM_CONFIG` | PC → MCU | Implemented |
+| `0x04` | `START_STREAM` | PC → MCU | Implemented |
+| `0x05` | `STOP_STREAM` | PC → MCU | Implemented |
+| `0x80` | `ACK` | MCU → PC | Implemented |
+| `0x81` | `NACK` | MCU → PC | Implemented |
+| `0x82` | `DEVICE_INFO` | MCU → PC | Implemented |
+| `0x83` | `DEVICE_STATUS` | MCU → PC | Defined; no emission trigger specified |
+| `0x90` | `TELEMETRY_SAMPLE` | MCU → PC | Implemented |
+| `0x91` | `ERROR_REPORT` | MCU → PC | Defined; error allocation/emission policy not specified |
+
+## Commands and direct responses
+
+### PING
+
+- Payload: empty
+- Allowed states: IDLE, STREAMING
+- Success response: `ACK`
+
+### GET_DEVICE_INFO
+
+- Payload: empty
+- Allowed states: IDLE, STREAMING
+- Success response: `DEVICE_INFO`
+
+### SET_STREAM_CONFIG
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 2 | `interval_us`, valid range 1,000–60,000 |
+
+The default is 5,000 microseconds. The command is accepted only in IDLE and reconfigures TIM6 after validation.
+
+### START_STREAM
+
+- Payload: empty
+- Allowed state: IDLE
+- Success effect: enter STREAMING and reset stream counters
+- Success response: `ACK`
+
+### STOP_STREAM
+
+- Payload: empty
+- Allowed state: STREAMING
+- Success effect: enter IDLE and stop telemetry
+- Success response: `ACK`
+
+### ACK and NACK
+
+Both have a three-byte payload:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Request Message ID |
+| 1 | 1 | Result code |
+| 2 | 1 | Current device state |
+
+For `ACK`, result code is required to be `OK (0x00)`.
+
+## DEVICE_INFO payload
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 2 | Device type = `0x4460` |
+| 2 | 1 | Firmware major |
+| 3 | 1 | Firmware minor |
+| 4 | 1 | Firmware patch |
+| 5 | 2 | Maximum stream rate in Hz |
+| 7 | 1 | Device name length |
+| 8 | N | UTF-8 device name, maximum 32 bytes |
+
+This implementation reports device name `NUCLEO-F446RE` and firmware `0.2.1`.
+
+## TELEMETRY_SAMPLE payload
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | `sample_counter` (`uint32`) |
+| 4 | 4 | `device_tick_us` (`uint32`) |
+| 8 | 4 | `sine_value` (IEEE-754 float32) |
+| 12 | 2 | `status_flags` (`uint16`) |
+
+Payload size is exactly 14 bytes. The sample counter starts at one after a successful `START_STREAM` and wraps as
+`uint32`. The sine source is a 1 Hz, 1000-entry float lookup table indexed by the configured interval phase.
+
+## Result codes
+
+| Value | Name |
 |---:|---|
-| `0x01` | Request |
-| `0x02` | Response |
-| `0x04` | Telemetry |
+| `0x00` | `OK` |
+| `0x01` | `INVALID_COMMAND` |
+| `0x02` | `INVALID_LENGTH` |
+| `0x03` | `INVALID_VALUE` |
+| `0x04` | `INVALID_STATE` |
+| `0x05` | `UNSUPPORTED_VERSION` |
+| `0x06` | `INTERNAL_ERROR` |
 
-## Message allocation
+## Error and resynchronization behavior
 
-| Range | Purpose |
-|---|---|
-| `0x0000–0x00FF` | Framework/health/device information |
-| `0x0100–0x0FFF` | Application command/response |
-| `0x2000–0x2FFF` | Telemetry/stream |
+- Invalid CRC: discard candidate and search for the next SOF; no response.
+- Invalid payload length above 1024: discard candidate and search for the next SOF; no response.
+- Partial frame older than 250 ms: discard partial frame.
+- Decodable unsupported version: send `NACK/UNSUPPORTED_VERSION`.
+- Decodable unknown Message ID: send `NACK/INVALID_COMMAND`.
+- Invalid state: send `NACK/INVALID_STATE`.
+- PC command sequence zero: send `NACK/INVALID_VALUE`.
 
-## Requests
+## Shared vectors
 
-All current request payloads are empty.
+The normative JSON vectors under `Protocol/TestVectors/` cover:
 
-| ID | Name | Expected response |
-|---:|---|---|
-| `0x0001` | `PING_REQUEST` | `PING_RESPONSE` |
-| `0x0002` | `GET_DEVICE_INFO_REQUEST` | `DEVICE_INFO_RESPONSE` |
-| `0x0100` | `START_STREAM_REQUEST` | `START_STREAM_RESPONSE` |
-| `0x0102` | `STOP_STREAM_REQUEST` | `STOP_STREAM_RESPONSE` |
+- PC command: `PING`
+- MCU response: `ACK`
+- Configuration command: `SET_STREAM_CONFIG`
+- State command: `START_STREAM`
+- MCU event: `TELEMETRY_SAMPLE`
 
-The response sequence echoes the request sequence for correlation.
-
-## Framework/device responses
-
-### `ERROR_RESPONSE` (`0x00E0`)
-
-Used when a request has invalid flags, an unsupported Message ID, or an invalid payload.
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 2 | Rejected request Message ID |
-| 2 | 1 | Result code |
-| 3 | 1 | Current device state |
-
-### `PING_RESPONSE` (`0x0081`)
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 4 | Device uptime in ms, saturating |
-| 4 | 1 | Device state |
-| 5 | 1 | Wire protocol version |
-
-### `DEVICE_INFO_RESPONSE` (`0x0082`)
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 1 | Wire protocol version |
-| 1 | 1 | FW major |
-| 2 | 1 | FW minor |
-| 3 | 1 | FW patch |
-| 4 | 1 | Board ID = 1 (`NUCLEO-F446RE`) |
-| 5 | 1 | Transport ID = 1 (`USART2/ST-LINK VCP`) |
-| 6 | 2 | Sample period in microseconds = 5000 |
-| 8 | 1 | Maximum payload length = 48 |
-| 9 | 1 | Capability flags |
-| 10 | 2 | Reserved = 0 |
-
-Capability flags:
-
-- Bit 0: streaming
-- Bit 1: CRC16
-- Bit 2: event-driven firmware
-
-## Application control responses
-
-### `START_STREAM_RESPONSE` (`0x0101`)
-
-### `STOP_STREAM_RESPONSE` (`0x0103`)
-
-Both use the same two-byte payload:
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 1 | Result code |
-| 1 | 1 | Current device state |
-
-Result codes:
-
-| Value | Meaning |
-|---:|---|
-| 0 | OK |
-| 1 | Invalid state |
-| 2 | Unsupported |
-| 3 | Invalid payload |
-| 4 | Transport busy |
-
-## `TELEMETRY` (`0x2000`)
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 4 | Device uptime in ms, saturating |
-| 4 | 2 | Signed sine sample (`int16`) |
-| 6 | 1 | Device state |
-| 7 | 1 | Status flags |
-| 8 | 2 | Event-overflow count, saturated |
-| 10 | 2 | UART RX overflow count, saturated |
-| 12 | 2 | UART TX overflow count, saturated |
-
-Telemetry frame length is 25 bytes. At 115200 bps, 8-N-1, its nominal wire occupancy is approximately 2.17 ms.
-
-The header sequence is a modulo-65536 **sample-attempt** counter. It advances even when a telemetry frame cannot be queued. The host can therefore detect dropped sample attempts from sequence gaps.
-
-## Parser behavior
-
-- Partial serial reads are supported.
-- Multiple frames in one serial read are supported.
-- Invalid version/length increments the format-error counter and triggers resynchronization.
-- CRC failure increments the CRC-error counter and triggers resynchronization.
-- A valid frame with unsupported semantics receives `ERROR_RESPONSE`; malformed frames do not receive a response.
+Both C and Python tests compare every encoded byte, including CRC. A same-language round trip alone is not treated
+as sufficient interoperability evidence.

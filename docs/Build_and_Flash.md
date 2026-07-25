@@ -52,7 +52,7 @@ python3 -m pip install pyserial
 python3 Tools/serial_smoke_test.py COM5
 ```
 
-On Linux, replace `COM5` with the VCP device such as `/dev/ttyACM0`. The script sends `PING`, `GET_DEVICE_INFO`, `START_STREAM`, collects telemetry, then sends `STOP_STREAM`.
+On Linux, replace `COM5` with the VCP device such as `/dev/ttyACM0`. The script sends `PING`, `GET_DEVICE_INFO`, `SET_STREAM_CONFIG`, and `START_STREAM`, validates shared float32 telemetry, then sends `STOP_STREAM`.
 
 The protocol-only path can be checked without hardware or pyserial:
 

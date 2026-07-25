@@ -7,10 +7,10 @@
 //     Implements STM32F446 board and processor services.
 //
 // Responsibilities:
-//     - Configures the reset-safe HSI clock with a bounded readiness check.
-//     - Configures NUCLEO-F446RE GPIO and TIM6.
+//     - Configures the reset-safe HSI clock with bounded readiness checks.
+//     - Configures NUCLEO-F446RE GPIO and microsecond-resolution TIM6.
 //     - Provides LED, interrupt-mask, and wait primitives.
-//     - Posts the five-millisecond timer event from interrupt context.
+//     - Posts sample-timer events from interrupt context.
 
 #include "platform.h"
 
@@ -50,9 +50,10 @@
 #define TIM_SR_UIF                           (1u << 0u)
 #define TIM_EGR_UG                           (1u << 0u)
 #define TIM_CR1_CEN                          (1u << 0u)
-#define MILLISECONDS_PER_SECOND              (1000u)
-#define TIM6_PRESCALER                       (PLATFORM_CORE_CLOCK_HZ / MILLISECONDS_PER_SECOND)
-#define TIM6_PERIOD_COUNTS                   (PLATFORM_TICK_PERIOD_MS)
+#define MICROSECONDS_PER_SECOND              (1000000u)
+#define TIM6_COUNTER_CLOCK_HZ                (1000000u)
+#define TIM6_PRESCALER                       (PLATFORM_CORE_CLOCK_HZ / TIM6_COUNTER_CLOCK_HZ)
+#define TIM6_PERIOD_MIN_US                   (1u)
 #define PLATFORM_CLOCK_READY_POLL_LIMIT      (100000u)
 
 /*
@@ -128,9 +129,9 @@ static void platform_configure_gpio(void)
  *
  * Return Value:
  *     true:
- *         HSI became ready and was selected as the system clock.
+ *         HSI became ready and was selected.
  *     false:
- *         HSI readiness or source selection exceeded the bounded poll limit.
+ *         Readiness or source selection exceeded the poll limit.
  */
 static bool platform_configure_hsi_clock(void)
 {
@@ -171,6 +172,38 @@ static bool platform_configure_hsi_clock(void)
 
 /*
  * Function:
+ *     platform_apply_sample_period_us
+ *
+ * Purpose:
+ *     Applies one valid TIM6 period with a bounded interrupt critical section.
+ *
+ * Input Parameters:
+ *     period_us:
+ *         Supplies a validated period from one through 65535 microseconds.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
+static void platform_apply_sample_period_us(uint16_t period_us)
+{
+    uint32_t primask;
+
+    primask = platform_irq_save();
+    TIM6->cr1 = 0u;
+    TIM6->psc = TIM6_PRESCALER - 1u;
+    TIM6->arr = (uint32_t)period_us - 1u;
+    TIM6->egr = TIM_EGR_UG;
+    TIM6->sr = 0u;
+    TIM6->dier = TIM_DIER_UIE;
+    TIM6->cr1 = TIM_CR1_CEN;
+    platform_irq_restore(primask);
+}
+
+/*
+ * Function:
  *     platform_init
  *
  * Purpose:
@@ -184,9 +217,9 @@ static bool platform_configure_hsi_clock(void)
  *
  * Return Value:
  *     true:
- *         Required clock and GPIO initialization completed.
+ *         Required initialization completed.
  *     false:
- *         The HSI clock did not become ready within the bounded poll limit.
+ *         HSI initialization exceeded the poll limit.
  */
 bool platform_init(void)
 {
@@ -203,22 +236,31 @@ bool platform_init(void)
 
 /*
  * Function:
- *     platform_start_five_millisecond_timer
+ *     platform_start_sample_timer
  *
  * Purpose:
- *     Configures and starts TIM6 as a five-millisecond application event source.
+ *     Configures and starts TIM6 for the requested sample period.
  *
  * Input Parameters:
- *     None.
+ *     period_us:
+ *         Supplies a timer period from one through 65535 microseconds.
  *
  * Output Parameters:
  *     None.
  *
  * Return Value:
- *     None.
+ *     true:
+ *         TIM6 was configured and started.
+ *     false:
+ *         The requested period was outside the hardware range.
  */
-void platform_start_five_millisecond_timer(void)
+bool platform_start_sample_timer(uint16_t period_us)
 {
+    if (period_us < TIM6_PERIOD_MIN_US)
+    {
+        return false;
+    }
+
     RCC->apb1enr |= RCC_APB1ENR_TIM6EN;
     // Read back the enable register to complete the peripheral-clock write.
     (void)RCC->apb1enr;
@@ -226,17 +268,42 @@ void platform_start_five_millisecond_timer(void)
     RCC->apb1rstr |= RCC_APB1RSTR_TIM6RST;
     RCC->apb1rstr &= ~RCC_APB1RSTR_TIM6RST;
 
-    TIM6->cr1 = 0u;
-    TIM6->psc = TIM6_PRESCALER - 1u;
-    TIM6->arr = TIM6_PERIOD_COUNTS - 1u;
-    TIM6->egr = TIM_EGR_UG;
-    TIM6->sr = 0u;
-    TIM6->dier = TIM_DIER_UIE;
-
     stm32_nvic_set_priority(TIM6_IRQ_NUMBER, TIM6_IRQ_PRIORITY);
     stm32_nvic_enable_irq(TIM6_IRQ_NUMBER);
+    platform_apply_sample_period_us(period_us);
 
-    TIM6->cr1 = TIM_CR1_CEN;
+    return true;
+}
+
+/*
+ * Function:
+ *     platform_set_sample_period_us
+ *
+ * Purpose:
+ *     Atomically reconfigures a running TIM6 sample period.
+ *
+ * Input Parameters:
+ *     period_us:
+ *         Supplies a timer period from one through 65535 microseconds.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     true:
+ *         The period was applied.
+ *     false:
+ *         The requested period was outside the hardware range.
+ */
+bool platform_set_sample_period_us(uint16_t period_us)
+{
+    if (period_us < TIM6_PERIOD_MIN_US)
+    {
+        return false;
+    }
+
+    platform_apply_sample_period_us(period_us);
+    return true;
 }
 
 /*
@@ -283,9 +350,6 @@ void platform_led_set(bool is_on)
  *
  * Return Value:
  *     None.
- *
- * Notes:
- *     Call only after atomically confirming that no event is pending.
  */
 void platform_wait_for_interrupt(void)
 {
@@ -309,7 +373,7 @@ void platform_wait_for_interrupt(void)
  *
  * Return Value:
  *     primask:
- *         Previous PRIMASK value to pass to platform_irq_restore.
+ *         Previous PRIMASK value.
  */
 uint32_t platform_irq_save(void)
 {
@@ -348,7 +412,7 @@ void platform_irq_restore(uint32_t primask)
  *     platform_tim6_dac_irq_handler
  *
  * Purpose:
- *     Handles the TIM6 update interrupt and posts one application tick.
+ *     Handles a TIM6 update interrupt and posts one sample-timer event.
  *
  * Input Parameters:
  *     None.

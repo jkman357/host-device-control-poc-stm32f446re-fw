@@ -1,0 +1,45 @@
+{
+  "protocol": "host-device-control-poc",
+  "protocol_version": "0.1.0",
+  "wire_version": 1,
+  "contract_status": "candidate_for_alignment",
+  "byte_order": "little_endian",
+  "crc_storage": "little_endian",
+  "vectors": [
+    {
+      "name": "ping_sequence_1",
+      "message_id": "0x01",
+      "sequence": 1,
+      "payload_hex": "",
+      "frame_hex": "A55A0101010000005597"
+    },
+    {
+      "name": "ack_ping_sequence_1",
+      "message_id": "0x80",
+      "sequence": 1,
+      "payload_hex": "010000",
+      "frame_hex": "A55A018001000300010000536F"
+    },
+    {
+      "name": "set_stream_config_5000us_sequence_0x1234",
+      "message_id": "0x03",
+      "sequence": 4660,
+      "payload_hex": "8813",
+      "frame_hex": "A55A0103341202008813909A"
+    },
+    {
+      "name": "start_stream_sequence_2",
+      "message_id": "0x04",
+      "sequence": 2,
+      "payload_hex": "",
+      "frame_hex": "A55A010402000000DE2F"
+    },
+    {
+      "name": "telemetry_sample_1",
+      "message_id": "0x90",
+      "sequence": 1,
+      "payload_hex": "010000008813000091A8003D0000",
+      "frame_hex": "A55A019001000E00010000008813000091A8003D00008DCF"
+    }
+  ]
+}

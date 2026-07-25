@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serial smoke test for the STM32F446RE host-device control PoC."""
+"""Serial smoke test for the shared PC/MCU Protocol on NUCLEO-F446RE."""
 
 from __future__ import annotations
 
@@ -12,28 +12,47 @@ from collections.abc import Iterable
 
 SOF = b"\xA5\x5A"
 PROTOCOL_VERSION = 0x01
-FLAG_REQUEST = 0x01
+MAX_PAYLOAD_LENGTH = 1024
+FRAME_OVERHEAD_LENGTH = 10
 
-PING_REQUEST = 0x01
-GET_DEVICE_INFO_REQUEST = 0x02
-START_STREAM_REQUEST = 0x0100
-STOP_STREAM_REQUEST = 0x0102
+PING = 0x01
+GET_DEVICE_INFO = 0x02
+SET_STREAM_CONFIG = 0x03
+START_STREAM = 0x04
+STOP_STREAM = 0x05
+ACK = 0x80
+NACK = 0x81
+DEVICE_INFO = 0x82
+DEVICE_STATUS = 0x83
+TELEMETRY_SAMPLE = 0x90
+ERROR_REPORT = 0x91
 
-PING_RESPONSE = 0x0081
-DEVICE_INFO_RESPONSE = 0x0082
-ERROR_RESPONSE = 0x00E0
-START_STREAM_RESPONSE = 0x0101
-STOP_STREAM_RESPONSE = 0x0103
-TELEMETRY = 0x2000
+RESULT_OK = 0x00
+DEFAULT_INTERVAL_US = 5000
 
-MAX_PAYLOAD_LENGTH = 48
-FRAME_OVERHEAD_LENGTH = 11
+NORMATIVE_VECTORS = (
+    (PING, 1, b"", bytes.fromhex("A55A0101010000005597")),
+    (ACK, 1, bytes.fromhex("010000"), bytes.fromhex("A55A018001000300010000536F")),
+    (
+        SET_STREAM_CONFIG,
+        0x1234,
+        bytes.fromhex("8813"),
+        bytes.fromhex("A55A0103341202008813909A"),
+    ),
+    (START_STREAM, 2, b"", bytes.fromhex("A55A010402000000DE2F")),
+    (
+        TELEMETRY_SAMPLE,
+        1,
+        bytes.fromhex("010000008813000091A8003D0000"),
+        bytes.fromhex("A55A019001000E00010000008813000091A8003D00008DCF"),
+    ),
+)
 
 
 @dataclasses.dataclass(frozen=True)
 class Frame:
+    version: int
     message_id: int
-    flags: int
     sequence: int
     payload: bytes
 
@@ -51,30 +70,21 @@ def crc16_ccitt_false(data: Iterable[int]) -> int:
     return crc
 
 
-def encode_frame(message_id: int, flags: int, sequence: int, payload: bytes = b"") -> bytes:
-    """Encode one protocol frame."""
-    if not 0 <= message_id <= 0xFFFF:
-        raise ValueError("message_id must fit in two bytes")
-    if not 0 <= flags <= 0xFF:
-        raise ValueError("flags must fit in one byte")
+def encode_frame(message_id: int, sequence: int, payload: bytes = b"") -> bytes:
+    """Encode one authoritative Protocol frame."""
+    if not 0 <= message_id <= 0xFF:
+        raise ValueError("message_id must fit in one byte")
     if not 0 <= sequence <= 0xFFFF:
         raise ValueError("sequence must fit in two bytes")
     if len(payload) > MAX_PAYLOAD_LENGTH:
         raise ValueError("payload is too long")
 
-    body = struct.pack(
-        "<BHBBH",
-        PROTOCOL_VERSION,
-        message_id,
-        flags,
-        len(payload),
-        sequence,
-    ) + payload
+    body = struct.pack("<BBHH", PROTOCOL_VERSION, message_id, sequence, len(payload)) + payload
     return SOF + body + struct.pack("<H", crc16_ccitt_false(body))
 
 
 class FrameParser:
-    """Incremental byte-stream parser tolerant of partial and combined reads."""
+    """Incremental parser tolerant of partial reads, combined reads, and noise."""
 
     def __init__(self) -> None:
         self._buffer = bytearray()
@@ -97,12 +107,11 @@ class FrameParser:
             if sof_index > 0:
                 del self._buffer[:sof_index]
 
-            if len(self._buffer) < 9:
+            if len(self._buffer) < 8:
                 break
 
-            version = self._buffer[2]
-            payload_length = self._buffer[6]
-            if version != PROTOCOL_VERSION or payload_length > MAX_PAYLOAD_LENGTH:
+            payload_length = struct.unpack_from("<H", self._buffer, 6)[0]
+            if payload_length > MAX_PAYLOAD_LENGTH:
                 self.format_error_count += 1
                 del self._buffer[0]
                 continue
@@ -112,7 +121,7 @@ class FrameParser:
                 break
 
             candidate = bytes(self._buffer[:frame_length])
-            body_end = 9 + payload_length
+            body_end = 8 + payload_length
             expected_crc = struct.unpack_from("<H", candidate, body_end)[0]
             actual_crc = crc16_ccitt_false(candidate[2:body_end])
             if expected_crc != actual_crc:
@@ -120,80 +129,86 @@ class FrameParser:
                 del self._buffer[0]
                 continue
 
-            message_id = struct.unpack_from("<H", candidate, 3)[0]
-            flags = candidate[5]
-            sequence = struct.unpack_from("<H", candidate, 7)[0]
-            payload = candidate[9:body_end]
-            frames.append(Frame(message_id, flags, sequence, payload))
+            version, message_id, sequence, _ = struct.unpack_from("<BBHH", candidate, 2)
+            payload = candidate[8:body_end]
+            frames.append(Frame(version, message_id, sequence, payload))
             del self._buffer[:frame_length]
 
         return frames
 
 
 def run_self_test() -> None:
+    """Verify all normative vectors and controlled CRC corruption."""
     assert crc16_ccitt_false(b"123456789") == 0x29B1
 
-    encoded = encode_frame(PING_REQUEST, FLAG_REQUEST, 0x1234)
     parser = FrameParser()
-    frames: list[Frame] = []
-    for chunk in (encoded[:1], encoded[1:4], encoded[4:9], encoded[9:]):
-        frames.extend(parser.feed(chunk))
+    for message_id, sequence, payload, expected in NORMATIVE_VECTORS:
+        encoded = encode_frame(message_id, sequence, payload)
+        assert encoded == expected
 
-    assert frames == [Frame(PING_REQUEST, FLAG_REQUEST, 0x1234, b"")]
+        frames: list[Frame] = []
+        split_a = min(1, len(expected))
+        split_b = min(5, len(expected))
+        for chunk in (expected[:split_a], expected[split_a:split_b], expected[split_b:]):
+            frames.extend(parser.feed(chunk))
+        assert frames == [Frame(PROTOCOL_VERSION, message_id, sequence, payload)]
 
-    combined = encode_frame(GET_DEVICE_INFO_REQUEST, FLAG_REQUEST, 2) + encode_frame(
-        START_STREAM_REQUEST, FLAG_REQUEST, 3
-    )
-    parsed = parser.feed(combined)
-    assert [frame.message_id for frame in parsed] == [
-        GET_DEVICE_INFO_REQUEST,
-        START_STREAM_REQUEST,
-    ]
-    print("serial smoke-test protocol self-test: PASS")
+    corrupted = bytearray(NORMATIVE_VECTORS[-1][3])
+    corrupted[8] ^= 0x01
+    assert parser.feed(bytes(corrupted)) == []
+    assert parser.crc_error_count == 1
+    print("serial smoke-test shared Protocol self-test: PASS")
 
 
 def describe_frame(frame: Frame) -> str:
-    if frame.message_id == PING_RESPONSE and len(frame.payload) == 6:
-        uptime_ms, state, version = struct.unpack("<IBB", frame.payload)
-        return f"PING_RESPONSE uptime={uptime_ms} ms state={state} protocol={version}"
+    """Return a readable description for a decoded frame."""
+    if frame.message_id in (ACK, NACK) and len(frame.payload) == 3:
+        request_id, result, state = struct.unpack("<BBB", frame.payload)
+        name = "ACK" if frame.message_id == ACK else "NACK"
+        return (
+            f"{name} seq={frame.sequence} request=0x{request_id:02X} "
+            f"result={result} state={state}"
+        )
 
-    if frame.message_id == DEVICE_INFO_RESPONSE and len(frame.payload) == 12:
-        version, fw_major, fw_minor, fw_patch, board_id, transport_id, period_us, max_payload, capabilities, _ = struct.unpack(
-            "<BBBBBBHBBH", frame.payload
+    if frame.message_id == DEVICE_INFO and len(frame.payload) >= 8:
+        device_type, fw_major, fw_minor, fw_patch, max_rate, name_length = struct.unpack_from(
+            "<HBBBHB", frame.payload, 0
+        )
+        expected_length = 8 + name_length
+        if len(frame.payload) == expected_length:
+            device_name = frame.payload[8:].decode("utf-8", errors="replace")
+            return (
+                f"DEVICE_INFO seq={frame.sequence} type=0x{device_type:04X} "
+                f"fw={fw_major}.{fw_minor}.{fw_patch} max_rate={max_rate} Hz "
+                f"name={device_name}"
+            )
+
+    if frame.message_id == DEVICE_STATUS and len(frame.payload) == 3:
+        state, status_flags = struct.unpack("<BH", frame.payload)
+        return f"DEVICE_STATUS seq={frame.sequence} state={state} status=0x{status_flags:04X}"
+
+    if frame.message_id == TELEMETRY_SAMPLE and len(frame.payload) == 14:
+        sample_counter, device_tick_us, sine_value, status_flags = struct.unpack(
+            "<IIfH", frame.payload
         )
         return (
-            "DEVICE_INFO_RESPONSE "
-            f"protocol={version} fw={fw_major}.{fw_minor}.{fw_patch} "
-            f"board={board_id} transport={transport_id} period={period_us} us "
-            f"max_payload={max_payload} capabilities=0x{capabilities:02X}"
+            f"TELEMETRY_SAMPLE seq={frame.sequence} sample={sample_counter} "
+            f"tick={device_tick_us} us sine={sine_value:.6f} "
+            f"status=0x{status_flags:04X}"
         )
 
-    if frame.message_id == ERROR_RESPONSE and len(frame.payload) == 4:
-        request_id, result, state = struct.unpack("<HBB", frame.payload)
-        return f"ERROR_RESPONSE request=0x{request_id:04X} result={result} state={state}"
-
-    if frame.message_id in (START_STREAM_RESPONSE, STOP_STREAM_RESPONSE) and len(frame.payload) == 2:
-        result, state = struct.unpack("<BB", frame.payload)
-        name = "START_STREAM_RESPONSE" if frame.message_id == START_STREAM_RESPONSE else "STOP_STREAM_RESPONSE"
-        return f"{name} result={result} state={state}"
-
-    if frame.message_id == TELEMETRY and len(frame.payload) == 14:
-        uptime_ms, sample, state, status, event_overflow, rx_overflow, tx_overflow = struct.unpack(
-            "<IhBBHHH", frame.payload
-        )
-        return (
-            f"TELEMETRY seq={frame.sequence} uptime={uptime_ms} ms sample={sample} "
-            f"state={state} status=0x{status:02X} overflow(event/rx/tx)="
-            f"{event_overflow}/{rx_overflow}/{tx_overflow}"
-        )
+    if frame.message_id == ERROR_REPORT and len(frame.payload) == 6:
+        error_code, detail = struct.unpack("<HI", frame.payload)
+        return f"ERROR_REPORT seq={frame.sequence} code={error_code} detail={detail}"
 
     return (
-        f"FRAME id=0x{frame.message_id:04X} flags=0x{frame.flags:02X} "
+        f"FRAME version={frame.version} id=0x{frame.message_id:02X} "
         f"seq={frame.sequence} payload={frame.payload.hex(' ')}"
     )
 
 
 def read_until(serial_port: object, parser: FrameParser, deadline: float) -> list[Frame]:
+    """Read until at least one frame is available or the deadline expires."""
     frames: list[Frame] = []
     while time.monotonic() < deadline:
         waiting = getattr(serial_port, "in_waiting", 0)
@@ -205,13 +220,54 @@ def read_until(serial_port: object, parser: FrameParser, deadline: float) -> lis
     return frames
 
 
-def send_request(serial_port: object, message_id: int, sequence: int) -> None:
-    frame = encode_frame(message_id, FLAG_REQUEST, sequence)
-    serial_port.write(frame)
+def send_request(
+    serial_port: object,
+    message_id: int,
+    sequence: int,
+    payload: bytes = b"",
+) -> None:
+    """Encode and send one PC-to-MCU command."""
+    serial_port.write(encode_frame(message_id, sequence, payload))
     serial_port.flush()
 
 
+def response_matches(frame: Frame, expected_id: int, request_id: int, sequence: int) -> bool:
+    """Return whether a direct response matches the pending command."""
+    if frame.message_id != expected_id or frame.sequence != sequence:
+        return False
+    if expected_id == ACK:
+        if len(frame.payload) != 3:
+            return False
+        return frame.payload[0] == request_id and frame.payload[1] == RESULT_OK
+    if expected_id == DEVICE_INFO:
+        return len(frame.payload) >= 8
+    return True
+
+
+def wait_for_response(
+    serial_port: object,
+    parser: FrameParser,
+    expected_id: int,
+    request_id: int,
+    sequence: int,
+    timeout_s: float,
+) -> Frame:
+    """Wait for one matching direct response."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        for frame in read_until(serial_port, parser, deadline):
+            print(describe_frame(frame))
+            if response_matches(frame, expected_id, request_id, sequence):
+                return frame
+            if frame.message_id == NACK and frame.sequence == sequence:
+                raise RuntimeError(describe_frame(frame))
+    raise TimeoutError(
+        f"timeout waiting for 0x{expected_id:02X} to request 0x{request_id:02X}"
+    )
+
+
 def run_hardware_test(port: str, telemetry_count: int, timeout_s: float) -> None:
+    """Execute command, configuration, streaming, and stop bring-up checks."""
     try:
         import serial  # type: ignore[import-not-found]
     except ImportError as exc:
@@ -224,60 +280,49 @@ def run_hardware_test(port: str, telemetry_count: int, timeout_s: float) -> None
         serial_port.reset_input_buffer()
         serial_port.reset_output_buffer()
 
-        for request_id, expected_id in (
-            (PING_REQUEST, PING_RESPONSE),
-            (GET_DEVICE_INFO_REQUEST, DEVICE_INFO_RESPONSE),
-            (START_STREAM_REQUEST, START_STREAM_RESPONSE),
-        ):
-            send_request(serial_port, request_id, sequence)
-            deadline = time.monotonic() + timeout_s
-            matched = False
-            while time.monotonic() < deadline and not matched:
-                for frame in read_until(serial_port, parser, deadline):
-                    print(describe_frame(frame))
-                    if frame.message_id == expected_id and frame.sequence == sequence:
-                        matched = True
-            if not matched:
-                raise TimeoutError(
-                    f"timeout waiting for response 0x{expected_id:04X} to request 0x{request_id:04X}"
-                )
-            sequence += 1
+        send_request(serial_port, PING, sequence)
+        wait_for_response(serial_port, parser, ACK, PING, sequence, timeout_s)
+        sequence += 1
+
+        send_request(serial_port, GET_DEVICE_INFO, sequence)
+        wait_for_response(serial_port, parser, DEVICE_INFO, GET_DEVICE_INFO, sequence, timeout_s)
+        sequence += 1
+
+        config_payload = struct.pack("<H", DEFAULT_INTERVAL_US)
+        send_request(serial_port, SET_STREAM_CONFIG, sequence, config_payload)
+        wait_for_response(serial_port, parser, ACK, SET_STREAM_CONFIG, sequence, timeout_s)
+        sequence += 1
+
+        send_request(serial_port, START_STREAM, sequence)
+        wait_for_response(serial_port, parser, ACK, START_STREAM, sequence, timeout_s)
+        sequence += 1
 
         received_telemetry = 0
-        previous_sequence: int | None = None
+        previous_sample_counter: int | None = None
         telemetry_deadline = time.monotonic() + max(timeout_s, telemetry_count * 0.02)
         while received_telemetry < telemetry_count and time.monotonic() < telemetry_deadline:
             for frame in read_until(serial_port, parser, telemetry_deadline):
-                if frame.message_id != TELEMETRY:
+                if frame.message_id != TELEMETRY_SAMPLE or len(frame.payload) != 14:
                     print(describe_frame(frame))
                     continue
 
-                if previous_sequence is not None and frame.sequence != ((previous_sequence + 1) & 0xFFFF):
-                    print(
-                        f"WARNING: telemetry sequence gap {previous_sequence} -> {frame.sequence}",
-                        file=sys.stderr,
-                    )
-                previous_sequence = frame.sequence
+                sample_counter = struct.unpack_from("<I", frame.payload, 0)[0]
+                if previous_sample_counter is not None:
+                    expected_counter = (previous_sample_counter + 1) & 0xFFFFFFFF
+                    if sample_counter != expected_counter:
+                        print(
+                            f"WARNING: sample counter gap {previous_sample_counter} -> {sample_counter}",
+                            file=sys.stderr,
+                        )
+                previous_sample_counter = sample_counter
                 print(describe_frame(frame))
                 received_telemetry += 1
 
-        send_request(serial_port, STOP_STREAM_REQUEST, sequence)
-        stop_deadline = time.monotonic() + timeout_s
-        stopped = False
-        while time.monotonic() < stop_deadline and not stopped:
-            for frame in read_until(serial_port, parser, stop_deadline):
-                if frame.message_id == STOP_STREAM_RESPONSE and frame.sequence == sequence:
-                    print(describe_frame(frame))
-                    stopped = True
-                elif frame.message_id != TELEMETRY:
-                    print(describe_frame(frame))
+        send_request(serial_port, STOP_STREAM, sequence)
+        wait_for_response(serial_port, parser, ACK, STOP_STREAM, sequence, timeout_s)
 
         if received_telemetry < telemetry_count:
-            raise TimeoutError(
-                f"received {received_telemetry}/{telemetry_count} telemetry frames"
-            )
-        if not stopped:
-            raise TimeoutError("timeout waiting for STOP_STREAM result")
+            raise TimeoutError(f"received {received_telemetry}/{telemetry_count} telemetry frames")
 
     print(
         "hardware smoke test: PASS "
@@ -286,6 +331,7 @@ def run_hardware_test(port: str, telemetry_count: int, timeout_s: float) -> None
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("port", nargs="?", help="serial port, for example COM5 or /dev/ttyACM0")
     parser.add_argument("--telemetry-count", type=int, default=20)
@@ -295,6 +341,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Run the self-test or hardware smoke test."""
     args = parse_args()
 
     if args.self_test:

@@ -55,7 +55,7 @@ void app_event_init(void);
  *     app_event_post_tick_from_isr
  *
  * Purpose:
- *     Posts one pending 5 ms tick from interrupt context.
+ *     Posts one pending sample-timer tick from interrupt context.
  *
  * Input Parameters:
  *     None.

@@ -43,8 +43,8 @@
 #define USART2_IRQ_PRIORITY             (5u)
 #define USART2_BRR_16MHZ_115200         (0x008Bu)
 
-#define RX_RING_CAPACITY                (256u)
-#define TX_RING_CAPACITY                (512u)
+#define RX_RING_CAPACITY                (2048u)
+#define TX_RING_CAPACITY                (2048u)
 #define RX_RING_MASK                    (RX_RING_CAPACITY - 1u)
 #define TX_RING_MASK                    (TX_RING_CAPACITY - 1u)
 #define RING_RESERVED_SLOT_COUNT         (1u)

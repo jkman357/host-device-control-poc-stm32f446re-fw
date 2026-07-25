@@ -8,18 +8,16 @@
 //
 // Responsibilities:
 //     - Initializes platform and firmware modules.
-//     - Starts the five-millisecond application timer.
+//     - Starts the default Protocol-configured sample timer.
 //     - Runs the event-driven superloop.
-//     - Enters a defined fail-stop state when required initialization fails.
-//
-// Notes:
-//     Product business logic is not implemented in this file.
+//     - Enters a defined fail-stop state when initialization fails.
 
 #include "main.h"
 
 #include "app.h"
 #include "app_event.h"
 #include "platform.h"
+#include "protocol_messages.h"
 #include "serial_transport.h"
 
 /*
@@ -37,10 +35,6 @@
  *
  * Return Value:
  *     None.
- *
- * Notes:
- *     The intentional infinite loop owns the processor after initialization failure.
- *     Each iteration performs one bounded no-operation instruction.
  */
 static void main_enter_fail_stop(void)
 {
@@ -68,7 +62,7 @@ static void main_enter_fail_stop(void)
  *     None.
  *
  * Return Value:
- *     None during normal operation because the dispatcher loop does not return.
+ *     None during normal operation because the dispatcher does not return.
  *
  * Notes:
  *     The name main is required by the freestanding C startup contract.
@@ -76,10 +70,10 @@ static void main_enter_fail_stop(void)
 int main(void)
 {
     app_event_batch_t event_batch;
-    bool is_platform_ready;
+    bool is_initialized;
 
-    is_platform_ready = platform_init();
-    if (is_platform_ready == false)
+    is_initialized = platform_init();
+    if (is_initialized == false)
     {
         main_enter_fail_stop();
     }
@@ -87,7 +81,11 @@ int main(void)
     app_event_init();
     serial_transport_init();
     app_init();
-    platform_start_five_millisecond_timer();
+    is_initialized = platform_start_sample_timer(PROTOCOL_STREAM_INTERVAL_DEFAULT_US);
+    if (is_initialized == false)
+    {
+        main_enter_fail_stop();
+    }
 
     for (;;)
     {

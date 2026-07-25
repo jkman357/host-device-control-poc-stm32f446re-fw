@@ -7,10 +7,10 @@
 //     Implements the device application controller for the firmware PoC.
 //
 // Responsibilities:
-//     - Owns device state and command behavior.
-//     - Processes protocol requests in main context.
-//     - Builds bounded response and telemetry payloads.
-//     - Coordinates the event, transport, platform, and sample-source modules.
+//     - Owns the authoritative idle and streaming state model.
+//     - Processes shared-Protocol commands in main context.
+//     - Builds ACK, NACK, DEVICE_INFO, and TELEMETRY_SAMPLE messages.
+//     - Coordinates configurable timer, transport, parser, and sine source behavior.
 
 #include "app.h"
 
@@ -26,75 +26,67 @@
 #include "serial_transport.h"
 #include "sine_generator.h"
 
-#define FW_VERSION_MAJOR                    (0u)
-#define FW_VERSION_MINOR                    (1u)
-#define FW_VERSION_PATCH                    (5u)
-#define BOARD_ID_NUCLEO_F446RE              (1u)
-#define TRANSPORT_ID_USART2_STLINK_VCP      (1u)
-#define SAMPLE_PERIOD_US                    (5000u)
-#define DEVICE_CAPABILITY_STREAMING         (1u << 0u)
-#define DEVICE_CAPABILITY_CRC16             (1u << 1u)
-#define DEVICE_CAPABILITY_EVENT_DRIVEN      (1u << 2u)
+#define FW_VERSION_MAJOR                       (0u)
+#define FW_VERSION_MINOR                       (2u)
+#define FW_VERSION_PATCH                       (1u)
+#define MICROSECONDS_PER_SECOND                (1000000u)
+#define LED_TOGGLE_PERIOD_US                   (500000u)
 
-#define PING_RESPONSE_LENGTH                (6u)
-#define PING_RESPONSE_UPTIME_OFFSET         (0u)
-#define PING_RESPONSE_STATE_OFFSET          (4u)
-#define PING_RESPONSE_VERSION_OFFSET        (5u)
+#define ACK_NACK_PAYLOAD_LENGTH                (3u)
+#define ACK_NACK_REQUEST_ID_OFFSET             (0u)
+#define ACK_NACK_RESULT_OFFSET                 (1u)
+#define ACK_NACK_STATE_OFFSET                  (2u)
 
-#define DEVICE_INFO_RESPONSE_LENGTH         (12u)
-#define DEVICE_INFO_PROTOCOL_OFFSET         (0u)
-#define DEVICE_INFO_FW_MAJOR_OFFSET         (1u)
-#define DEVICE_INFO_FW_MINOR_OFFSET         (2u)
-#define DEVICE_INFO_FW_PATCH_OFFSET         (3u)
-#define DEVICE_INFO_BOARD_OFFSET            (4u)
-#define DEVICE_INFO_TRANSPORT_OFFSET        (5u)
-#define DEVICE_INFO_SAMPLE_PERIOD_OFFSET    (6u)
-#define DEVICE_INFO_MAX_PAYLOAD_OFFSET      (8u)
-#define DEVICE_INFO_CAPABILITIES_OFFSET     (9u)
-#define DEVICE_INFO_RESERVED_0_OFFSET       (10u)
-#define DEVICE_INFO_RESERVED_1_OFFSET       (11u)
+#define DEVICE_INFO_TYPE_OFFSET                (0u)
+#define DEVICE_INFO_FW_MAJOR_OFFSET            (2u)
+#define DEVICE_INFO_FW_MINOR_OFFSET            (3u)
+#define DEVICE_INFO_FW_PATCH_OFFSET            (4u)
+#define DEVICE_INFO_MAX_RATE_OFFSET            (5u)
+#define DEVICE_INFO_NAME_LENGTH_OFFSET         (7u)
+#define DEVICE_INFO_NAME_OFFSET                (8u)
+#define DEVICE_INFO_FIXED_LENGTH               (8u)
+#define DEVICE_INFO_MAX_RATE_HZ                \
+    (MICROSECONDS_PER_SECOND / PROTOCOL_STREAM_INTERVAL_MIN_US)
 
-#define ERROR_RESPONSE_LENGTH               (4u)
-#define ERROR_RESPONSE_MESSAGE_ID_OFFSET    (0u)
-#define ERROR_RESPONSE_RESULT_OFFSET        (2u)
-#define ERROR_RESPONSE_STATE_OFFSET         (3u)
+#define SET_STREAM_CONFIG_PAYLOAD_LENGTH       (2u)
+#define SET_STREAM_CONFIG_INTERVAL_OFFSET      (0u)
 
-#define CONTROL_RESPONSE_LENGTH             (2u)
-#define CONTROL_RESPONSE_RESULT_OFFSET      (0u)
-#define CONTROL_RESPONSE_STATE_OFFSET       (1u)
+#define TELEMETRY_PAYLOAD_LENGTH               (14u)
+#define TELEMETRY_SAMPLE_COUNTER_OFFSET        (0u)
+#define TELEMETRY_DEVICE_TICK_OFFSET           (4u)
+#define TELEMETRY_SINE_VALUE_OFFSET            (8u)
+#define TELEMETRY_STATUS_FLAGS_OFFSET          (12u)
 
-#define TELEMETRY_PAYLOAD_LENGTH            (14u)
-#define TELEMETRY_UPTIME_OFFSET             (0u)
-#define TELEMETRY_SAMPLE_OFFSET             (4u)
-#define TELEMETRY_STATE_OFFSET              (6u)
-#define TELEMETRY_STATUS_OFFSET             (7u)
-#define TELEMETRY_EVENT_OVERFLOW_OFFSET     (8u)
-#define TELEMETRY_RX_OVERFLOW_OFFSET        (10u)
-#define TELEMETRY_TX_OVERFLOW_OFFSET        (12u)
+static const uint8_t s_device_name[] =
+{
+    'N', 'U', 'C', 'L', 'E', 'O', '-', 'F', '4', '4', '6', 'R', 'E'
+};
 
-#define LED_TOGGLE_TICK_COUNT               (100u)
-
-#define TELEMETRY_STATUS_STREAMING          (1u << 0u)
-#define TELEMETRY_STATUS_UART_ERROR         (1u << 1u)
-#define TELEMETRY_STATUS_EVENT_OVERFLOW     (1u << 2u)
-#define TELEMETRY_STATUS_TX_REJECTED        (1u << 3u)
+_Static_assert(sizeof(s_device_name) <= PROTOCOL_DEVICE_NAME_MAX_LENGTH,
+               "Device name exceeds Protocol limit.");
 
 static device_state_t s_device_state;
 static protocol_parser_t s_protocol_parser;
-static uint32_t s_uptime_ms;
-static uint16_t s_telemetry_sequence;
-static uint16_t s_led_tick_count;
+static protocol_frame_t s_received_frame;
+static uint8_t s_encoded_frame[PROTOCOL_MAX_FRAME_LENGTH];
+static uint16_t s_stream_interval_us;
+static uint16_t s_unsolicited_sequence;
+static uint32_t s_device_tick_us;
+static uint32_t s_stream_phase_us;
+static uint32_t s_sample_counter;
+static uint32_t s_led_elapsed_us;
+static uint32_t s_send_failure_count;
+static uint32_t s_event_overflow_count;
+static uint32_t s_parser_timeout_observed_count;
 static bool s_is_led_on;
-static bool s_has_uart_error;
-static uint32_t s_last_event_overflow_count;
-static uint32_t s_tx_reject_count;
+static bool s_uart_error_event_seen;
 
 /*
  * Function:
  *     app_increment_saturating_u32
  *
  * Purpose:
- *     Increments a diagnostic counter without allowing unsigned wraparound.
+ *     Increments a diagnostic counter without unsigned wraparound.
  *
  * Input Parameters:
  *     counter:
@@ -102,7 +94,7 @@ static uint32_t s_tx_reject_count;
  *
  * Output Parameters:
  *     counter:
- *         Receives the incremented value or remains UINT32_MAX when saturated.
+ *         Receives the incremented value or remains UINT32_MAX.
  *
  * Return Value:
  *     None.
@@ -117,10 +109,38 @@ static void app_increment_saturating_u32(uint32_t *counter)
 
 /*
  * Function:
+ *     app_add_modulo_u32
+ *
+ * Purpose:
+ *     Adds an increment with explicit modulo-2^32 behavior.
+ *
+ * Input Parameters:
+ *     value:
+ *         Points to the counter to update.
+ *     increment:
+ *         Supplies the increment.
+ *
+ * Output Parameters:
+ *     value:
+ *         Receives the modulo-2^32 result.
+ *
+ * Return Value:
+ *     None.
+ */
+static void app_add_modulo_u32(uint32_t *value, uint32_t increment)
+{
+    uint64_t sum;
+
+    sum = (uint64_t)(*value) + (uint64_t)increment;
+    *value = (uint32_t)sum;
+}
+
+/*
+ * Function:
  *     app_transition_to
  *
  * Purpose:
- *     Applies one explicit application-state transition and its entry actions.
+ *     Applies one authoritative application-state transition and entry actions.
  *
  * Input Parameters:
  *     next_state:
@@ -130,112 +150,47 @@ static void app_increment_saturating_u32(uint32_t *counter)
  *     None.
  *
  * Return Value:
- *     None.
+ *     true:
+ *         The requested state was valid and applied.
+ *     false:
+ *         The requested state was outside the Protocol state model.
  *
  * Notes:
- *     Runs only in main context. This function is the sole writer of s_device_state.
+ *     Runs only in main context and is the sole writer of s_device_state.
  */
-static void app_transition_to(device_state_t next_state)
+static bool app_transition_to(device_state_t next_state)
 {
-    switch (next_state)
+    if ((next_state != DEVICE_STATE_IDLE) && (next_state != DEVICE_STATE_STREAMING))
     {
-        case DEVICE_STATE_IDLE:
-            s_is_led_on = false;
-            s_led_tick_count = 0u;
-            platform_led_set(false);
-            break;
+        return false;
+    }
 
-        case DEVICE_STATE_STREAMING:
-            s_telemetry_sequence = 0u;
-            s_led_tick_count = 0u;
-            s_is_led_on = false;
-            sine_generator_reset();
-            break;
-
-        case DEVICE_STATE_FAULT:
-            s_is_led_on = false;
-            s_led_tick_count = 0u;
-            platform_led_set(false);
-            break;
-
-        default:
-            next_state = DEVICE_STATE_FAULT;
-            s_is_led_on = false;
-            s_led_tick_count = 0u;
-            platform_led_set(false);
-            break;
+    if (next_state == DEVICE_STATE_IDLE)
+    {
+        s_is_led_on = false;
+        s_led_elapsed_us = 0u;
+        platform_led_set(false);
+    }
+    else
+    {
+        s_unsolicited_sequence = 1u;
+        s_sample_counter = 0u;
+        s_stream_phase_us = 0u;
+        s_is_led_on = false;
+        s_led_elapsed_us = 0u;
+        platform_led_set(false);
     }
 
     s_device_state = next_state;
+    return true;
 }
 
 /*
  * Function:
- *     app_add_uptime
+ *     app_take_unsolicited_sequence
  *
  * Purpose:
- *     Add elapsed milliseconds without wrapping uptime.
- *
- * Input Parameters:
- *     elapsed_ms:
- *         Elapsed time.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- */
-static void app_add_uptime(uint32_t elapsed_ms)
-{
-    if (s_uptime_ms <= (UINT32_MAX - elapsed_ms))
-    {
-        s_uptime_ms += elapsed_ms;
-    }
-    else
-    {
-        s_uptime_ms = UINT32_MAX;
-    }
-}
-
-/*
- * Function:
- *     app_saturate_to_u16
- *
- * Purpose:
- *     Return a 16-bit saturation of a 32-bit diagnostic counter.
- *
- * Input Parameters:
- *     value:
- *         Source value.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     result:
- *         Saturated value.
- */
-static uint16_t app_saturate_to_u16(uint32_t value)
-{
-    if (value > UINT16_MAX)
-    {
-        return UINT16_MAX;
-    }
-
-    return (uint16_t)value;
-}
-
-/*
- * Function:
- *     app_take_telemetry_sequence
- *
- * Purpose:
- *     Advance the protocol telemetry sequence modulo 65536. Intentional
- *         wraparound is isolated here because the wire-format sequence is
- *         defined as a modulo-65536 counter. The returned value
- *         identifies the sample attempt, including attempts dropped
- *         because the TX queue had no capacity.
+ *     Returns and advances the independent unsolicited-message sequence.
  *
  * Input Parameters:
  *     None.
@@ -245,21 +200,20 @@ static uint16_t app_saturate_to_u16(uint32_t value)
  *
  * Return Value:
  *     result:
- *         Current sequence before advancing.
+ *         Current sequence before modulo-65536 advancement.
  */
-static uint16_t app_take_telemetry_sequence(void)
+static uint16_t app_take_unsolicited_sequence(void)
 {
     uint16_t sequence;
 
-    sequence = s_telemetry_sequence;
-
-    if (s_telemetry_sequence == UINT16_MAX)
+    sequence = s_unsolicited_sequence;
+    if (s_unsolicited_sequence == UINT16_MAX)
     {
-        s_telemetry_sequence = 0u;
+        s_unsolicited_sequence = 0u;
     }
     else
     {
-        s_telemetry_sequence += 1u;
+        s_unsolicited_sequence += 1u;
     }
 
     return sequence;
@@ -267,16 +221,66 @@ static uint16_t app_take_telemetry_sequence(void)
 
 /*
  * Function:
+ *     app_take_next_sample_counter
+ *
+ * Purpose:
+ *     Advances and returns the modulo-2^32 telemetry sample counter.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     result:
+ *         Updated sample counter. The first sample after START_STREAM is one.
+ */
+static uint32_t app_take_next_sample_counter(void)
+{
+    app_add_modulo_u32(&s_sample_counter, 1u);
+    return s_sample_counter;
+}
+
+/*
+ * Function:
+ *     app_advance_stream_phase
+ *
+ * Purpose:
+ *     Advances the one-second sine phase by one configured sample interval.
+ *
+ * Input Parameters:
+ *     interval_us:
+ *         Supplies the elapsed sample interval.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     result:
+ *         Updated phase in the range zero through 999999 microseconds.
+ */
+static uint32_t app_advance_stream_phase(uint16_t interval_us)
+{
+    s_stream_phase_us += (uint32_t)interval_us;
+    if (s_stream_phase_us >= MICROSECONDS_PER_SECOND)
+    {
+        s_stream_phase_us -= MICROSECONDS_PER_SECOND;
+    }
+
+    return s_stream_phase_us;
+}
+
+/*
+ * Function:
  *     app_send_frame
  *
  * Purpose:
- *     Encodes and queues one bounded protocol frame.
+ *     Encodes and queues one bounded shared-Protocol frame.
  *
  * Input Parameters:
  *     message_id:
  *         Supplies the message identifier.
- *     flags:
- *         Supplies the frame flags.
  *     sequence:
  *         Supplies the frame sequence.
  *     payload:
@@ -291,54 +295,73 @@ static uint16_t app_take_telemetry_sequence(void)
  *     true:
  *         The frame was encoded and queued.
  *     false:
- *         Encoding failed or the transport had insufficient capacity.
+ *         Encoding failed or the TX ring had insufficient capacity.
  *
  * Notes:
- *     Runs in main context and does not retry a rejected transmit.
+ *     Runs only in main context and owns s_encoded_frame during the call.
  */
-static bool app_send_frame(uint16_t message_id,
-                          uint8_t flags,
-                          uint16_t sequence,
-                          const uint8_t *payload,
-                          uint8_t payload_length)
+static bool app_send_frame(uint8_t message_id,
+                           uint16_t sequence,
+                           const uint8_t *payload,
+                           uint16_t payload_length)
 {
-    uint8_t encoded_frame[PROTOCOL_MAX_FRAME_LENGTH];
     size_t encoded_length;
     bool is_encoded;
     serial_transport_result_t transport_result;
 
     is_encoded = protocol_encode_frame(message_id,
-                                       flags,
                                        sequence,
                                        payload,
                                        payload_length,
-                                       encoded_frame,
-                                       sizeof(encoded_frame),
+                                       s_encoded_frame,
+                                       sizeof(s_encoded_frame),
                                        &encoded_length);
-
     if (is_encoded == false)
     {
         return false;
     }
 
-    transport_result = serial_transport_write(encoded_frame, encoded_length);
+    transport_result = serial_transport_write(s_encoded_frame, encoded_length);
     return (transport_result == SERIAL_TRANSPORT_RESULT_OK);
 }
 
 /*
  * Function:
- *     app_send_error_response
+ *     app_record_send_result
  *
  * Purpose:
- *     Send a generic error response for a rejected request.
+ *     Records a failed frame-queue attempt without blocking or retrying.
+ *
+ * Input Parameters:
+ *     is_sent:
+ *         Supplies the app_send_frame result.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
+static void app_record_send_result(bool is_sent)
+{
+    if (is_sent == false)
+    {
+        app_increment_saturating_u32(&s_send_failure_count);
+    }
+}
+
+/*
+ * Function:
+ *     app_send_ack
+ *
+ * Purpose:
+ *     Sends a successful direct response using the request sequence.
  *
  * Input Parameters:
  *     request_message_id:
- *         Rejected request message identifier.
+ *         Supplies the accepted command identifier.
  *     request_sequence:
- *         Request sequence to echo.
- *     result_code:
- *         Rejection result code.
+ *         Supplies the request sequence to copy.
  *
  * Output Parameters:
  *     None.
@@ -346,40 +369,36 @@ static bool app_send_frame(uint16_t message_id,
  * Return Value:
  *     None.
  */
-static void app_send_error_response(uint16_t request_message_id,
-                                    uint16_t request_sequence,
-                                    protocol_command_result_t result_code)
+static void app_send_ack(uint8_t request_message_id, uint16_t request_sequence)
 {
-    uint8_t payload[ERROR_RESPONSE_LENGTH];
+    uint8_t payload[ACK_NACK_PAYLOAD_LENGTH];
+    bool is_sent;
 
-    protocol_write_u16_le(&payload[ERROR_RESPONSE_MESSAGE_ID_OFFSET], request_message_id);
-    payload[ERROR_RESPONSE_RESULT_OFFSET] = (uint8_t)result_code;
-    payload[ERROR_RESPONSE_STATE_OFFSET] = (uint8_t)s_device_state;
+    payload[ACK_NACK_REQUEST_ID_OFFSET] = request_message_id;
+    payload[ACK_NACK_RESULT_OFFSET] = (uint8_t)PROTOCOL_RESULT_OK;
+    payload[ACK_NACK_STATE_OFFSET] = (uint8_t)s_device_state;
 
-    if (app_send_frame(PROTOCOL_MESSAGE_ERROR_RESPONSE,
-                       PROTOCOL_FLAG_RESPONSE,
-                       request_sequence,
-                       payload,
-                       ERROR_RESPONSE_LENGTH) == false)
-    {
-        app_increment_saturating_u32(&s_tx_reject_count);
-    }
+    is_sent = app_send_frame(PROTOCOL_MESSAGE_ACK,
+                             request_sequence,
+                             payload,
+                             ACK_NACK_PAYLOAD_LENGTH);
+    app_record_send_result(is_sent);
 }
 
 /*
  * Function:
- *     app_send_control_response
+ *     app_send_nack
  *
  * Purpose:
- *     Send a dedicated start/stop control response.
+ *     Sends a rejected direct response using the request sequence.
  *
  * Input Parameters:
- *     response_message_id:
- *         Dedicated response identifier.
+ *     request_message_id:
+ *         Supplies the rejected command identifier.
  *     request_sequence:
- *         Request sequence to echo.
+ *         Supplies the request sequence to copy.
  *     result_code:
- *         Command result code.
+ *         Supplies the authoritative rejection result.
  *
  * Output Parameters:
  *     None.
@@ -387,35 +406,34 @@ static void app_send_error_response(uint16_t request_message_id,
  * Return Value:
  *     None.
  */
-static void app_send_control_response(uint16_t response_message_id,
-                                      uint16_t request_sequence,
-                                      protocol_command_result_t result_code)
+static void app_send_nack(uint8_t request_message_id,
+                          uint16_t request_sequence,
+                          protocol_result_code_t result_code)
 {
-    uint8_t payload[CONTROL_RESPONSE_LENGTH];
+    uint8_t payload[ACK_NACK_PAYLOAD_LENGTH];
+    bool is_sent;
 
-    payload[CONTROL_RESPONSE_RESULT_OFFSET] = (uint8_t)result_code;
-    payload[CONTROL_RESPONSE_STATE_OFFSET] = (uint8_t)s_device_state;
+    payload[ACK_NACK_REQUEST_ID_OFFSET] = request_message_id;
+    payload[ACK_NACK_RESULT_OFFSET] = (uint8_t)result_code;
+    payload[ACK_NACK_STATE_OFFSET] = (uint8_t)s_device_state;
 
-    if (app_send_frame(response_message_id,
-                       PROTOCOL_FLAG_RESPONSE,
-                       request_sequence,
-                       payload,
-                       CONTROL_RESPONSE_LENGTH) == false)
-    {
-        app_increment_saturating_u32(&s_tx_reject_count);
-    }
+    is_sent = app_send_frame(PROTOCOL_MESSAGE_NACK,
+                             request_sequence,
+                             payload,
+                             ACK_NACK_PAYLOAD_LENGTH);
+    app_record_send_result(is_sent);
 }
 
 /*
  * Function:
- *     app_handle_ping_request
+ *     app_send_device_info
  *
  * Purpose:
- *     Process a validated PING request.
+ *     Sends the authoritative DEVICE_INFO direct response.
  *
  * Input Parameters:
- *     request:
- *         Request frame.
+ *     request_sequence:
+ *         Supplies the request sequence to copy.
  *
  * Output Parameters:
  *     None.
@@ -423,96 +441,86 @@ static void app_send_control_response(uint16_t response_message_id,
  * Return Value:
  *     None.
  */
-static void app_handle_ping_request(const protocol_frame_t *request)
+static void app_send_device_info(uint16_t request_sequence)
 {
-    uint8_t payload[PING_RESPONSE_LENGTH];
+    uint8_t payload[DEVICE_INFO_FIXED_LENGTH + sizeof(s_device_name)];
+    size_t name_index;
+    bool is_sent;
 
-    if (request->payload_length != 0u)
-    {
-        app_send_error_response(request->message_id,
-                                request->sequence,
-                              PROTOCOL_COMMAND_RESULT_INVALID_PAYLOAD);
-        return;
-    }
-
-    protocol_write_u32_le(&payload[PING_RESPONSE_UPTIME_OFFSET], s_uptime_ms);
-    payload[PING_RESPONSE_STATE_OFFSET] = (uint8_t)s_device_state;
-    payload[PING_RESPONSE_VERSION_OFFSET] = PROTOCOL_VERSION;
-
-    if (app_send_frame(PROTOCOL_MESSAGE_PING_RESPONSE,
-                       PROTOCOL_FLAG_RESPONSE,
-                       request->sequence,
-                       payload,
-                       PING_RESPONSE_LENGTH) == false)
-    {
-        app_increment_saturating_u32(&s_tx_reject_count);
-    }
-}
-
-/*
- * Function:
- *     app_handle_device_info_request
- *
- * Purpose:
- *     Process a validated GET_DEVICE_INFO request.
- *
- * Input Parameters:
- *     request:
- *         Request frame.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- */
-static void app_handle_device_info_request(const protocol_frame_t *request)
-{
-    uint8_t payload[DEVICE_INFO_RESPONSE_LENGTH];
-    const uint8_t capabilities = (uint8_t)(DEVICE_CAPABILITY_STREAMING |
-                                            DEVICE_CAPABILITY_CRC16 |
-                                            DEVICE_CAPABILITY_EVENT_DRIVEN);
-
-    if (request->payload_length != 0u)
-    {
-        app_send_error_response(request->message_id,
-                                request->sequence,
-                              PROTOCOL_COMMAND_RESULT_INVALID_PAYLOAD);
-        return;
-    }
-
-    payload[DEVICE_INFO_PROTOCOL_OFFSET] = PROTOCOL_VERSION;
+    protocol_write_u16_le(&payload[DEVICE_INFO_TYPE_OFFSET],
+                          PROTOCOL_DEVICE_TYPE_STM32F446RE);
     payload[DEVICE_INFO_FW_MAJOR_OFFSET] = FW_VERSION_MAJOR;
     payload[DEVICE_INFO_FW_MINOR_OFFSET] = FW_VERSION_MINOR;
     payload[DEVICE_INFO_FW_PATCH_OFFSET] = FW_VERSION_PATCH;
-    payload[DEVICE_INFO_BOARD_OFFSET] = BOARD_ID_NUCLEO_F446RE;
-    payload[DEVICE_INFO_TRANSPORT_OFFSET] = TRANSPORT_ID_USART2_STLINK_VCP;
-    protocol_write_u16_le(&payload[DEVICE_INFO_SAMPLE_PERIOD_OFFSET], SAMPLE_PERIOD_US);
-    payload[DEVICE_INFO_MAX_PAYLOAD_OFFSET] = PROTOCOL_MAX_PAYLOAD_LENGTH;
-    payload[DEVICE_INFO_CAPABILITIES_OFFSET] = capabilities;
-    payload[DEVICE_INFO_RESERVED_0_OFFSET] = 0u;
-    payload[DEVICE_INFO_RESERVED_1_OFFSET] = 0u;
+    protocol_write_u16_le(&payload[DEVICE_INFO_MAX_RATE_OFFSET],
+                          (uint16_t)DEVICE_INFO_MAX_RATE_HZ);
+    payload[DEVICE_INFO_NAME_LENGTH_OFFSET] = (uint8_t)sizeof(s_device_name);
 
-    if (app_send_frame(PROTOCOL_MESSAGE_DEVICE_INFO_RESPONSE,
-                       PROTOCOL_FLAG_RESPONSE,
-                       request->sequence,
-                       payload,
-                       DEVICE_INFO_RESPONSE_LENGTH) == false)
+    name_index = 0u;
+    while (name_index < sizeof(s_device_name))
     {
-        app_increment_saturating_u32(&s_tx_reject_count);
+        payload[DEVICE_INFO_NAME_OFFSET + name_index] = s_device_name[name_index];
+        name_index += 1u;
     }
+
+    is_sent = app_send_frame(PROTOCOL_MESSAGE_DEVICE_INFO,
+                             request_sequence,
+                             payload,
+                             (uint16_t)sizeof(payload));
+    app_record_send_result(is_sent);
 }
 
 /*
  * Function:
- *     app_handle_start_stream_request
+ *     app_get_status_flags
  *
  * Purpose:
- *     Process a START_STREAM request.
+ *     Builds the sticky transport status flags defined by the Protocol.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     result:
+ *         Bitwise OR of defined protocol_status_flag_t values.
+ */
+static uint16_t app_get_status_flags(void)
+{
+    serial_transport_statistics_t statistics;
+    uint16_t status_flags;
+
+    serial_transport_get_statistics(&statistics);
+    status_flags = (uint16_t)PROTOCOL_STATUS_NONE;
+
+    if (statistics.rx_overflow_count != 0u)
+    {
+        status_flags |= (uint16_t)PROTOCOL_STATUS_RX_OVERFLOW_OBSERVED;
+    }
+    if (statistics.tx_overflow_count != 0u)
+    {
+        status_flags |= (uint16_t)PROTOCOL_STATUS_TX_OVERFLOW_OBSERVED;
+    }
+    if ((statistics.uart_error_count != 0u) || (s_uart_error_event_seen == true))
+    {
+        status_flags |= (uint16_t)PROTOCOL_STATUS_UART_ERROR_OBSERVED;
+    }
+
+    return status_flags;
+}
+
+/*
+ * Function:
+ *     app_handle_ping
+ *
+ * Purpose:
+ *     Validates PING and sends ACK or NACK.
  *
  * Input Parameters:
  *     request:
- *         Request frame.
+ *         Points to the decoded request.
  *
  * Output Parameters:
  *     None.
@@ -520,39 +528,30 @@ static void app_handle_device_info_request(const protocol_frame_t *request)
  * Return Value:
  *     None.
  */
-static void app_handle_start_stream_request(const protocol_frame_t *request)
+static void app_handle_ping(const protocol_frame_t *request)
 {
-    protocol_command_result_t result_code;
-
     if (request->payload_length != 0u)
     {
-        result_code = PROTOCOL_COMMAND_RESULT_INVALID_PAYLOAD;
-    }
-    else if (s_device_state == DEVICE_STATE_IDLE)
-    {
-        app_transition_to(DEVICE_STATE_STREAMING);
-        result_code = PROTOCOL_COMMAND_RESULT_OK;
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_LENGTH);
     }
     else
     {
-        result_code = PROTOCOL_COMMAND_RESULT_INVALID_STATE;
+        app_send_ack(request->message_id, request->sequence);
     }
-
-    app_send_control_response(PROTOCOL_MESSAGE_START_STREAM_RESPONSE,
-                              request->sequence,
-                            result_code);
 }
 
 /*
  * Function:
- *     app_handle_stop_stream_request
+ *     app_handle_get_device_info
  *
  * Purpose:
- *     Process a STOP_STREAM request.
+ *     Validates GET_DEVICE_INFO and sends DEVICE_INFO or NACK.
  *
  * Input Parameters:
  *     request:
- *         Request frame.
+ *         Points to the decoded request.
  *
  * Output Parameters:
  *     None.
@@ -560,27 +559,178 @@ static void app_handle_start_stream_request(const protocol_frame_t *request)
  * Return Value:
  *     None.
  */
-static void app_handle_stop_stream_request(const protocol_frame_t *request)
+static void app_handle_get_device_info(const protocol_frame_t *request)
 {
-    protocol_command_result_t result_code;
-
     if (request->payload_length != 0u)
     {
-        result_code = PROTOCOL_COMMAND_RESULT_INVALID_PAYLOAD;
-    }
-    else if (s_device_state == DEVICE_STATE_STREAMING)
-    {
-        app_transition_to(DEVICE_STATE_IDLE);
-        result_code = PROTOCOL_COMMAND_RESULT_OK;
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_LENGTH);
     }
     else
     {
-        result_code = PROTOCOL_COMMAND_RESULT_INVALID_STATE;
+        app_send_device_info(request->sequence);
+    }
+}
+
+/*
+ * Function:
+ *     app_handle_set_stream_config
+ *
+ * Purpose:
+ *     Validates and applies SET_STREAM_CONFIG while idle.
+ *
+ * Input Parameters:
+ *     request:
+ *         Points to the decoded request.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
+static void app_handle_set_stream_config(const protocol_frame_t *request)
+{
+    uint16_t requested_interval_us;
+    bool is_applied;
+
+    if (request->payload_length != SET_STREAM_CONFIG_PAYLOAD_LENGTH)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_LENGTH);
+        return;
     }
 
-    app_send_control_response(PROTOCOL_MESSAGE_STOP_STREAM_RESPONSE,
-                              request->sequence,
-                            result_code);
+    if (s_device_state != DEVICE_STATE_IDLE)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_STATE);
+        return;
+    }
+
+    requested_interval_us =
+        protocol_read_u16_le(&request->payload[SET_STREAM_CONFIG_INTERVAL_OFFSET]);
+    if ((requested_interval_us < PROTOCOL_STREAM_INTERVAL_MIN_US) ||
+        (requested_interval_us > PROTOCOL_STREAM_INTERVAL_MAX_US))
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_VALUE);
+        return;
+    }
+
+    is_applied = platform_set_sample_period_us(requested_interval_us);
+    if (is_applied == false)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INTERNAL_ERROR);
+        return;
+    }
+
+    s_stream_interval_us = requested_interval_us;
+    app_send_ack(request->message_id, request->sequence);
+}
+
+/*
+ * Function:
+ *     app_handle_start_stream
+ *
+ * Purpose:
+ *     Validates START_STREAM and enters streaming on success.
+ *
+ * Input Parameters:
+ *     request:
+ *         Points to the decoded request.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
+static void app_handle_start_stream(const protocol_frame_t *request)
+{
+    bool is_transitioned;
+
+    if (request->payload_length != 0u)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_LENGTH);
+        return;
+    }
+
+    if (s_device_state != DEVICE_STATE_IDLE)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_STATE);
+        return;
+    }
+
+    is_transitioned = app_transition_to(DEVICE_STATE_STREAMING);
+    if (is_transitioned == false)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INTERNAL_ERROR);
+        return;
+    }
+
+    app_send_ack(request->message_id, request->sequence);
+}
+
+/*
+ * Function:
+ *     app_handle_stop_stream
+ *
+ * Purpose:
+ *     Validates STOP_STREAM and enters idle on success.
+ *
+ * Input Parameters:
+ *     request:
+ *         Points to the decoded request.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
+static void app_handle_stop_stream(const protocol_frame_t *request)
+{
+    bool is_transitioned;
+
+    if (request->payload_length != 0u)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_LENGTH);
+        return;
+    }
+
+    if (s_device_state != DEVICE_STATE_STREAMING)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_STATE);
+        return;
+    }
+
+    is_transitioned = app_transition_to(DEVICE_STATE_IDLE);
+    if (is_transitioned == false)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INTERNAL_ERROR);
+        return;
+    }
+
+    app_send_ack(request->message_id, request->sequence);
 }
 
 /*
@@ -588,11 +738,11 @@ static void app_handle_stop_stream_request(const protocol_frame_t *request)
  *     app_handle_request
  *
  * Purpose:
- *     Dispatch one validated request frame.
+ *     Dispatches one CRC-valid request according to the authoritative contract.
  *
  * Input Parameters:
  *     request:
- *         Request frame.
+ *         Points to the decoded frame.
  *
  * Output Parameters:
  *     None.
@@ -602,36 +752,48 @@ static void app_handle_stop_stream_request(const protocol_frame_t *request)
  */
 static void app_handle_request(const protocol_frame_t *request)
 {
-    if (request->flags != PROTOCOL_FLAG_REQUEST)
+    if (request->version != PROTOCOL_VERSION)
     {
-        app_send_error_response(request->message_id,
-                                request->sequence,
-                              PROTOCOL_COMMAND_RESULT_UNSUPPORTED);
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_UNSUPPORTED_VERSION);
+        return;
+    }
+
+    if (request->sequence == 0u)
+    {
+        app_send_nack(request->message_id,
+                      request->sequence,
+                      PROTOCOL_RESULT_INVALID_VALUE);
         return;
     }
 
     switch (request->message_id)
     {
-        case PROTOCOL_MESSAGE_PING_REQUEST:
-            app_handle_ping_request(request);
+        case PROTOCOL_MESSAGE_PING:
+            app_handle_ping(request);
             break;
 
-        case PROTOCOL_MESSAGE_GET_DEVICE_INFO_REQUEST:
-            app_handle_device_info_request(request);
+        case PROTOCOL_MESSAGE_GET_DEVICE_INFO:
+            app_handle_get_device_info(request);
             break;
 
-        case PROTOCOL_MESSAGE_START_STREAM_REQUEST:
-            app_handle_start_stream_request(request);
+        case PROTOCOL_MESSAGE_SET_STREAM_CONFIG:
+            app_handle_set_stream_config(request);
             break;
 
-        case PROTOCOL_MESSAGE_STOP_STREAM_REQUEST:
-            app_handle_stop_stream_request(request);
+        case PROTOCOL_MESSAGE_START_STREAM:
+            app_handle_start_stream(request);
+            break;
+
+        case PROTOCOL_MESSAGE_STOP_STREAM:
+            app_handle_stop_stream(request);
             break;
 
         default:
-            app_send_error_response(request->message_id,
-                                    request->sequence,
-                                  PROTOCOL_COMMAND_RESULT_UNSUPPORTED);
+            app_send_nack(request->message_id,
+                          request->sequence,
+                          PROTOCOL_RESULT_INVALID_COMMAND);
             break;
     }
 }
@@ -641,7 +803,7 @@ static void app_handle_request(const protocol_frame_t *request)
  *     app_process_received_bytes
  *
  * Purpose:
- *     Drain received UART bytes and feed the protocol parser.
+ *     Drains received bytes and dispatches complete CRC-valid frames.
  *
  * Input Parameters:
  *     None.
@@ -655,16 +817,16 @@ static void app_handle_request(const protocol_frame_t *request)
 static void app_process_received_bytes(void)
 {
     uint8_t data_byte;
-    protocol_frame_t frame;
     protocol_parse_result_t parse_result;
 
     while (serial_transport_read_byte(&data_byte) == true)
     {
-        parse_result = protocol_parser_push_byte(&s_protocol_parser, data_byte, &frame);
-
+        parse_result = protocol_parser_push_byte(&s_protocol_parser,
+                                                 data_byte,
+                                                 &s_received_frame);
         if (parse_result == PROTOCOL_PARSE_FRAME_READY)
         {
-            app_handle_request(&frame);
+            app_handle_request(&s_received_frame);
         }
     }
 }
@@ -674,10 +836,11 @@ static void app_process_received_bytes(void)
  *     app_update_led
  *
  * Purpose:
- *     Update the LED heartbeat for one 5 ms tick.
+ *     Updates the streaming heartbeat using elapsed microseconds.
  *
  * Input Parameters:
- *     None.
+ *     elapsed_us:
+ *         Supplies elapsed timer time.
  *
  * Output Parameters:
  *     None.
@@ -685,25 +848,22 @@ static void app_process_received_bytes(void)
  * Return Value:
  *     None.
  */
-static void app_update_led(void)
+static void app_update_led(uint16_t elapsed_us)
 {
     if (s_device_state != DEVICE_STATE_STREAMING)
     {
+        s_led_elapsed_us = 0u;
         s_is_led_on = false;
-        s_led_tick_count = 0u;
         platform_led_set(false);
         return;
     }
 
-    if (s_led_tick_count >= (LED_TOGGLE_TICK_COUNT - 1u))
+    s_led_elapsed_us += (uint32_t)elapsed_us;
+    if (s_led_elapsed_us >= LED_TOGGLE_PERIOD_US)
     {
-        s_led_tick_count = 0u;
+        s_led_elapsed_us -= LED_TOGGLE_PERIOD_US;
         s_is_led_on = (s_is_led_on == false);
         platform_led_set(s_is_led_on);
-    }
-    else
-    {
-        s_led_tick_count += 1u;
     }
 }
 
@@ -712,10 +872,11 @@ static void app_update_led(void)
  *     app_send_telemetry
  *
  * Purpose:
- *     Build and queue one telemetry frame.
+ *     Builds and queues one authoritative TELEMETRY_SAMPLE event.
  *
  * Input Parameters:
- *     None.
+ *     interval_us:
+ *         Supplies the elapsed configured sample interval.
  *
  * Output Parameters:
  *     None.
@@ -723,51 +884,32 @@ static void app_update_led(void)
  * Return Value:
  *     None.
  */
-static void app_send_telemetry(void)
+static void app_send_telemetry(uint16_t interval_us)
 {
     uint8_t payload[TELEMETRY_PAYLOAD_LENGTH];
-    uint8_t status_flags;
-    int16_t sample;
+    uint32_t sample_counter;
+    uint32_t phase_us;
+    uint16_t status_flags;
     uint16_t sequence;
-    serial_transport_statistics_t statistics;
+    float sine_value;
+    bool is_sent;
 
-    sample = sine_generator_get_next_sample();
-    sequence = app_take_telemetry_sequence();
-    serial_transport_get_statistics(&statistics);
+    sample_counter = app_take_next_sample_counter();
+    phase_us = app_advance_stream_phase(interval_us);
+    sine_value = sine_generator_get_sample(phase_us);
+    status_flags = app_get_status_flags();
+    sequence = app_take_unsolicited_sequence();
 
-    status_flags = TELEMETRY_STATUS_STREAMING;
-    if (s_has_uart_error == true)
-    {
-        status_flags |= TELEMETRY_STATUS_UART_ERROR;
-    }
-    if (s_last_event_overflow_count != 0u)
-    {
-        status_flags |= TELEMETRY_STATUS_EVENT_OVERFLOW;
-    }
-    if (s_tx_reject_count != 0u)
-    {
-        status_flags |= TELEMETRY_STATUS_TX_REJECTED;
-    }
+    protocol_write_u32_le(&payload[TELEMETRY_SAMPLE_COUNTER_OFFSET], sample_counter);
+    protocol_write_u32_le(&payload[TELEMETRY_DEVICE_TICK_OFFSET], s_device_tick_us);
+    protocol_write_float32_le(&payload[TELEMETRY_SINE_VALUE_OFFSET], sine_value);
+    protocol_write_u16_le(&payload[TELEMETRY_STATUS_FLAGS_OFFSET], status_flags);
 
-    protocol_write_u32_le(&payload[TELEMETRY_UPTIME_OFFSET], s_uptime_ms);
-    protocol_write_u16_le(&payload[TELEMETRY_SAMPLE_OFFSET], (uint16_t)sample);
-    payload[TELEMETRY_STATE_OFFSET] = (uint8_t)s_device_state;
-    payload[TELEMETRY_STATUS_OFFSET] = status_flags;
-    protocol_write_u16_le(&payload[TELEMETRY_EVENT_OVERFLOW_OFFSET],
-                          app_saturate_to_u16(s_last_event_overflow_count));
-    protocol_write_u16_le(&payload[TELEMETRY_RX_OVERFLOW_OFFSET],
-                          app_saturate_to_u16(statistics.rx_overflow_count));
-    protocol_write_u16_le(&payload[TELEMETRY_TX_OVERFLOW_OFFSET],
-                          app_saturate_to_u16(statistics.tx_overflow_count));
-
-    if (app_send_frame(PROTOCOL_MESSAGE_TELEMETRY,
-                       PROTOCOL_FLAG_TELEMETRY,
-                       sequence,
-                       payload,
-                       TELEMETRY_PAYLOAD_LENGTH) == false)
-    {
-        app_increment_saturating_u32(&s_tx_reject_count);
-    }
+    is_sent = app_send_frame(PROTOCOL_MESSAGE_TELEMETRY_SAMPLE,
+                             sequence,
+                             payload,
+                             TELEMETRY_PAYLOAD_LENGTH);
+    app_record_send_result(is_sent);
 }
 
 /*
@@ -775,10 +917,11 @@ static void app_send_telemetry(void)
  *     app_process_one_tick
  *
  * Purpose:
- *     Process one 5 ms application tick.
+ *     Processes one timer interval in main context.
  *
  * Input Parameters:
- *     None.
+ *     interval_us:
+ *         Supplies the period represented by the pending tick.
  *
  * Output Parameters:
  *     None.
@@ -786,14 +929,22 @@ static void app_send_telemetry(void)
  * Return Value:
  *     None.
  */
-static void app_process_one_tick(void)
+static void app_process_one_tick(uint16_t interval_us)
 {
-    app_add_uptime(PLATFORM_TICK_PERIOD_MS);
-    app_update_led();
+    bool did_timeout;
 
+    app_add_modulo_u32(&s_device_tick_us, (uint32_t)interval_us);
+    did_timeout = protocol_parser_advance_time_us(&s_protocol_parser,
+                                                  (uint32_t)interval_us);
+    if (did_timeout == true)
+    {
+        app_increment_saturating_u32(&s_parser_timeout_observed_count);
+    }
+
+    app_update_led(interval_us);
     if (s_device_state == DEVICE_STATE_STREAMING)
     {
-        app_send_telemetry();
+        app_send_telemetry(interval_us);
     }
 }
 
@@ -802,7 +953,7 @@ static void app_process_one_tick(void)
  *     app_init
  *
  * Purpose:
- *     Initialize application state and protocol processing.
+ *     Initializes application state and shared-Protocol processing.
  *
  * Input Parameters:
  *     None.
@@ -815,16 +966,26 @@ static void app_process_one_tick(void)
  */
 void app_init(void)
 {
-    s_uptime_ms = 0u;
-    s_telemetry_sequence = 0u;
-    s_led_tick_count = 0u;
+    bool is_transitioned;
+
+    s_stream_interval_us = PROTOCOL_STREAM_INTERVAL_DEFAULT_US;
+    s_unsolicited_sequence = 1u;
+    s_device_tick_us = 0u;
+    s_stream_phase_us = 0u;
+    s_sample_counter = 0u;
+    s_led_elapsed_us = 0u;
+    s_send_failure_count = 0u;
+    s_event_overflow_count = 0u;
+    s_parser_timeout_observed_count = 0u;
     s_is_led_on = false;
-    s_has_uart_error = false;
-    s_last_event_overflow_count = 0u;
-    s_tx_reject_count = 0u;
+    s_uart_error_event_seen = false;
 
     protocol_parser_init(&s_protocol_parser);
-    app_transition_to(DEVICE_STATE_IDLE);
+    is_transitioned = app_transition_to(DEVICE_STATE_IDLE);
+    if (is_transitioned == false)
+    {
+        platform_led_set(false);
+    }
 }
 
 /*
@@ -832,37 +993,34 @@ void app_init(void)
  *     app_process_events
  *
  * Purpose:
- *     Processes one coherent event batch in the main execution context.
+ *     Processes one coherent event batch in main context.
  *
  * Input Parameters:
  *     event_batch:
- *         Points to a caller-owned event batch. The function does not
- *         retain or modify the referenced object.
+ *         Points to the caller-owned event batch.
  *
  * Output Parameters:
  *     None.
  *
  * Return Value:
  *     None.
- *
- * Notes:
- *     A NULL pointer is ignored. The function shall not be called from
- *         interrupt context.
  */
 void app_process_events(const app_event_batch_t *event_batch)
 {
     uint16_t processed_tick_count;
+    uint16_t batch_interval_us;
 
     if (event_batch == NULL)
     {
         return;
     }
 
-    s_last_event_overflow_count = event_batch->tick_overflow_count;
+    batch_interval_us = s_stream_interval_us;
+    s_event_overflow_count = event_batch->tick_overflow_count;
 
     if ((event_batch->flags & APP_EVENT_FLAG_UART_ERROR) != 0u)
     {
-        s_has_uart_error = true;
+        s_uart_error_event_seen = true;
     }
 
     if ((event_batch->flags & APP_EVENT_FLAG_UART_RX_AVAILABLE) != 0u)
@@ -873,7 +1031,7 @@ void app_process_events(const app_event_batch_t *event_batch)
     processed_tick_count = 0u;
     while (processed_tick_count < event_batch->tick_count)
     {
-        app_process_one_tick();
+        app_process_one_tick(batch_interval_us);
         processed_tick_count += 1u;
     }
 }

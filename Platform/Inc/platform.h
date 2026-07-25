@@ -8,7 +8,7 @@
 //
 // Public Contract:
 //     - Initializes the reset-safe system clock and NUCLEO-F446RE GPIO.
-//     - Starts the fixed five-millisecond TIM6 event source.
+//     - Starts and reconfigures the microsecond-resolution TIM6 event source.
 //     - Controls the board LED and processor interrupt mask.
 //     - Exposes the TIM6 interrupt integration entry point.
 
@@ -23,7 +23,6 @@ extern "C" {
 #endif
 
 #define PLATFORM_CORE_CLOCK_HZ       (16000000u)
-#define PLATFORM_TICK_PERIOD_MS      (5u)
 
 /*
  * Function:
@@ -42,27 +41,53 @@ extern "C" {
  *     true:
  *         Required clock and GPIO initialization completed.
  *     false:
- *         The HSI clock did not become ready within the bounded poll limit.
+ *         HSI clock initialization exceeded the bounded poll limit.
  */
 bool platform_init(void);
 
 /*
  * Function:
- *     platform_start_five_millisecond_timer
+ *     platform_start_sample_timer
  *
  * Purpose:
- *     Configures and starts TIM6 as a five-millisecond application event source.
+ *     Configures and starts TIM6 for the requested sample period.
  *
  * Input Parameters:
- *     None.
+ *     period_us:
+ *         Supplies a timer period from one through 65535 microseconds.
  *
  * Output Parameters:
  *     None.
  *
  * Return Value:
- *     None.
+ *     true:
+ *         TIM6 was configured and started.
+ *     false:
+ *         The requested period was outside the hardware range.
  */
-void platform_start_five_millisecond_timer(void);
+bool platform_start_sample_timer(uint16_t period_us);
+
+/*
+ * Function:
+ *     platform_set_sample_period_us
+ *
+ * Purpose:
+ *     Atomically reconfigures a running TIM6 sample period.
+ *
+ * Input Parameters:
+ *     period_us:
+ *         Supplies a timer period from one through 65535 microseconds.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     true:
+ *         The period was applied.
+ *     false:
+ *         The requested period was outside the hardware range.
+ */
+bool platform_set_sample_period_us(uint16_t period_us);
 
 /*
  * Function:
@@ -98,9 +123,6 @@ void platform_led_set(bool is_on);
  *
  * Return Value:
  *     None.
- *
- * Notes:
- *     Call only after atomically confirming that no event is pending.
  */
 void platform_wait_for_interrupt(void);
 
@@ -147,7 +169,7 @@ void platform_irq_restore(uint32_t primask);
  *     platform_tim6_dac_irq_handler
  *
  * Purpose:
- *     Handles the TIM6 update interrupt and posts one application tick.
+ *     Handles a TIM6 update interrupt and posts one sample-timer event.
  *
  * Input Parameters:
  *     None.

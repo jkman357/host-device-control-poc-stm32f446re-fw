@@ -4,11 +4,12 @@
 //     protocol_messages.h
 //
 // Purpose:
-//     Defines the implemented PoC message and result identifiers.
+//     Defines the shared PoC message, result, state, and status identifiers.
 //
 // Public Contract:
-//     - Provides compile-time message IDs, flags, and command-result constants.
-//     - Mirrors the repository protocol YAML baseline.
+//     - Mirrors the authoritative system-repository Protocol contract.
+//     - Provides compile-time identifiers used by the MCU implementation.
+//     - Does not redefine wire semantics outside the authoritative YAML.
 
 #ifndef PROTOCOL_MESSAGES_H
 #define PROTOCOL_MESSAGES_H
@@ -19,31 +20,44 @@
 extern "C" {
 #endif
 
-#define PROTOCOL_MESSAGE_PING_REQUEST             (0x0001u)
-#define PROTOCOL_MESSAGE_GET_DEVICE_INFO_REQUEST  (0x0002u)
-#define PROTOCOL_MESSAGE_ERROR_RESPONSE            (0x00E0u)
-#define PROTOCOL_MESSAGE_PING_RESPONSE             (0x0081u)
-#define PROTOCOL_MESSAGE_DEVICE_INFO_RESPONSE      (0x0082u)
+#define PROTOCOL_MESSAGE_PING                 (0x01u)
+#define PROTOCOL_MESSAGE_GET_DEVICE_INFO      (0x02u)
+#define PROTOCOL_MESSAGE_SET_STREAM_CONFIG    (0x03u)
+#define PROTOCOL_MESSAGE_START_STREAM         (0x04u)
+#define PROTOCOL_MESSAGE_STOP_STREAM          (0x05u)
 
-#define PROTOCOL_MESSAGE_START_STREAM_REQUEST      (0x0100u)
-#define PROTOCOL_MESSAGE_START_STREAM_RESPONSE     (0x0101u)
-#define PROTOCOL_MESSAGE_STOP_STREAM_REQUEST       (0x0102u)
-#define PROTOCOL_MESSAGE_STOP_STREAM_RESPONSE      (0x0103u)
+#define PROTOCOL_MESSAGE_ACK                  (0x80u)
+#define PROTOCOL_MESSAGE_NACK                 (0x81u)
+#define PROTOCOL_MESSAGE_DEVICE_INFO          (0x82u)
+#define PROTOCOL_MESSAGE_DEVICE_STATUS        (0x83u)
+#define PROTOCOL_MESSAGE_TELEMETRY_SAMPLE     (0x90u)
+#define PROTOCOL_MESSAGE_ERROR_REPORT         (0x91u)
 
-#define PROTOCOL_MESSAGE_TELEMETRY                  (0x2000u)
+#define PROTOCOL_STREAM_INTERVAL_MIN_US       (1000u)
+#define PROTOCOL_STREAM_INTERVAL_MAX_US       (60000u)
+#define PROTOCOL_STREAM_INTERVAL_DEFAULT_US   (5000u)
 
-#define PROTOCOL_FLAG_REQUEST                    (0x01u)
-#define PROTOCOL_FLAG_RESPONSE                   (0x02u)
-#define PROTOCOL_FLAG_TELEMETRY                  (0x04u)
+#define PROTOCOL_DEVICE_TYPE_STM32F446RE      (0x4460u)
+#define PROTOCOL_DEVICE_NAME_MAX_LENGTH       (32u)
 
 typedef enum
 {
-    PROTOCOL_COMMAND_RESULT_OK = 0u,
-    PROTOCOL_COMMAND_RESULT_INVALID_STATE = 1u,
-    PROTOCOL_COMMAND_RESULT_UNSUPPORTED = 2u,
-    PROTOCOL_COMMAND_RESULT_INVALID_PAYLOAD = 3u,
-    PROTOCOL_COMMAND_RESULT_TRANSPORT_BUSY = 4u
-} protocol_command_result_t;
+    PROTOCOL_RESULT_OK = 0x00u,
+    PROTOCOL_RESULT_INVALID_COMMAND = 0x01u,
+    PROTOCOL_RESULT_INVALID_LENGTH = 0x02u,
+    PROTOCOL_RESULT_INVALID_VALUE = 0x03u,
+    PROTOCOL_RESULT_INVALID_STATE = 0x04u,
+    PROTOCOL_RESULT_UNSUPPORTED_VERSION = 0x05u,
+    PROTOCOL_RESULT_INTERNAL_ERROR = 0x06u
+} protocol_result_code_t;
+
+typedef enum
+{
+    PROTOCOL_STATUS_NONE = 0x0000u,
+    PROTOCOL_STATUS_RX_OVERFLOW_OBSERVED = 0x0001u,
+    PROTOCOL_STATUS_TX_OVERFLOW_OBSERVED = 0x0002u,
+    PROTOCOL_STATUS_UART_ERROR_OBSERVED = 0x0004u
+} protocol_status_flag_t;
 
 #ifdef __cplusplus
 }

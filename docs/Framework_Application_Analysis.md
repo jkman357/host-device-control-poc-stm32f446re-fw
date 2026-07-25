@@ -4,49 +4,64 @@
 
 | Framework concern | PoC realization |
 |---|---|
-| Coordinator/Node separation | This repository owns only the Node firmware; PC software is separate. |
+| Coordinator/Node separation | This repository owns only the MCU firmware; PC software is separate. |
 | Transport isolation | `Transport` owns USART2 buffering and interrupt service. |
-| Protocol authority | `Protocol/Spec/Host_Device_Control_PoC_protocol.yaml` owns message IDs and payload contracts. |
+| Protocol authority | System repository `protocol/protocol.yaml` is authoritative; MCU keeps a hash-pinned snapshot. |
 | Application ownership | `App` owns command handling, state, sampling, and telemetry decisions. |
-| Static resources | Event flags/counters and RX/TX buffers have fixed capacities. |
-| Failure visibility | Parser errors and event/RX/TX overflows are counted; telemetry exposes bounded counters. |
-| Compatibility | Protocol version and device information are queryable. |
-| Evidence boundary | Automated checks are recorded separately from physical-board verification. |
+| Static resources | Parser/frame storage, event state, and RX/TX buffers have fixed capacities. |
+| Failure visibility | Parser timeout/CRC/format and transport overflow/error diagnostics are retained. |
+| Compatibility | Protocol version, device information, result codes, and lifecycle status are explicit. |
+| Evidence boundary | Automated checks are separate from CubeIDE, physical-board, PC, and approval evidence. |
 
 ## Event model
 
 ```text
 USART2 IRQ ──► RX ring / TX drain ──► UART_RX event
-TIM6 IRQ   ──► 5 ms tick counter   ──► TICK event
+TIM6 IRQ   ──► configurable tick ───► TICK event
                                       │
                                       ▼
                              main-context dispatcher
                                       │
                  ┌────────────────────┼────────────────────┐
                  ▼                    ▼                    ▼
-             parser             state machine          telemetry
+          shared parser         state machine       float telemetry
 ```
 
-Interrupts do not execute protocol command behavior. The main context drains published work, then uses an atomic check-and-sleep operation to avoid a lost wake-up race.
+Interrupts do not execute Protocol command behavior. Main context drains published work and uses an atomic
+check-and-sleep operation to avoid a lost wake-up race.
 
 ## Resource bounds
 
 | Resource | Bound | Full behavior |
 |---|---:|---|
-| Protocol payload | 48 bytes | Encoder rejects larger payloads |
-| USART2 RX ring | 256 bytes | New byte dropped; saturated overflow counter increments |
-| USART2 TX ring | 512 bytes | Frame enqueue rejected; saturated overflow counter increments |
-| Pending 5 ms ticks | 32-bit saturating counter | Overflow counter records saturation attempts |
-| Protocol parser | One in-progress frame | Resynchronizes on SOF after format/CRC errors |
+| Protocol payload | 1024 bytes | Invalid length candidate discarded and parser resynchronized |
+| Encoded frame storage | 1034 bytes | Encoder rejects insufficient caller capacity |
+| USART2 RX ring | 2048 bytes | New byte dropped; saturating overflow counter increments |
+| USART2 TX ring | 2048 bytes | Whole-frame enqueue rejected; saturating overflow counter increments |
+| Pending timer ticks | `uint16` | Saturates; separate overflow counter increments |
+| Protocol parser | One in-progress frame | Resynchronizes after length, CRC, or timeout failure |
 
 ## Timing budget
 
-A telemetry frame is 25 bytes. At 115200 bps with 8-N-1 framing, its nominal wire time is approximately 2.17 ms, below the 5 ms sample period. This does not establish physical-board timing compliance; USB bridge buffering and host scheduling still require measurement.
+A `TELEMETRY_SAMPLE` frame is 24 bytes. At 115200 bps with 8-N-1 framing, nominal wire time is approximately
+2.08 ms. The default 5 ms interval is nominally below wire capacity, but USB bridge buffering, host scheduling,
+interrupt latency, and other frames still require measurement. The Protocol's 1 ms minimum interval is not
+sustainable for continuous 24-byte telemetry on this UART profile.
+
+## Contract and implementation boundary
+
+The MCU implementation follows the system contract for framing, IDs, fields, results, states, and timeout
+behavior. It does not claim authority to change them. Buffer size, register configuration, event representation,
+and internal diagnostics remain MCU implementation choices as long as they preserve wire behavior.
+
+The contract declares `DEVICE_STATUS` and `ERROR_REPORT`, but does not fully define their emission semantics.
+Their IDs remain reserved; v0.2.1 does not invent MCU-local triggers or error-code meanings.
 
 ## Known gaps
 
-- No target-board execution evidence is included.
-- No measured ISR latency, sample jitter, sustained throughput, or packet-loss acceptance result is included.
-- No PC application compatibility result is included.
+- No v0.2.1 STM32CubeIDE clean-build evidence is included yet.
+- No target-board execution or PC interoperability evidence is included.
+- No measured ISR latency, jitter, sustained throughput, or packet-loss acceptance result is included.
+- No approved PC compatible commit is pinned.
 - No firmware update, security, multi-node, or reconnect/session-generation behavior is implemented.
-- Protocol source generation is manual in this baseline; the YAML and C constants are checked for ID consistency only.
+- C source generation from YAML is manual; hash, ID, constants, vectors, and legacy-marker checks reduce drift.

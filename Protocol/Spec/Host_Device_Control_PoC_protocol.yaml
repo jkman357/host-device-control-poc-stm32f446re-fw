@@ -1,372 +1,296 @@
-schema_version: "1.0"
-
-document:
-  name: Host_Device_Control_PoC_protocol
-  version: V0.1.0
-  status: draft
-  owner: Ray Yang
-  last_updated: 2026-07-25
-  authoritative_file: Protocol/Spec/Host_Device_Control_PoC_protocol.yaml
-  note: Human review and approval are required before this becomes a controlled baseline.
+# Host-Device Control PoC shared PC/MCU wire contract.
+# This file is the project-level source of truth. Implementation code is not authoritative.
 
 protocol:
-  name: host_device_control_poc
-  family: coordinator_node
-  profile_name: STM32F446RE_UART_PoC
-  profile_id: 0x0001
-  version: V0.1.0
-  minimum_compatible_version: V0.1.0
-  default_execution_environment: application
-
-node_model:
-  topology: single_node
-  maximum_nodes: 1
-  maximum_online_nodes: 1
-  identity:
-    node_id_required: false
-    uniqueness_scope: protocol_instance
-    persistence: connection
-  addressing:
-    method: connection_bound
-    address_assignment: not_applicable
-    target_required_on_wire: false
-    broadcast:
-      supported: false
-      response_policy: not_applicable
-  multi_target:
-    supported: false
-    partial_failure_policy: not_applicable
-  scope:
-    protocol_session: connection
-    secure_session: connection
-    sequence: connection
-    correlation: connection
+  name: host-device-control-poc
+  version: 0.1.0
+  wire_version: 0x01
+  status: candidate_for_alignment
   lifecycle:
-    identity_conflict_policy: not_applicable
-    address_reuse_requires_new_connection_generation: true
-    address_reuse_requires_new_secure_session: false
-  resources:
-    maximum_pending_requests_per_node: 1
-    maximum_total_pending_requests: 1
-  firmware_update:
-    target_scope: single_node
-    concurrency: one_at_a_time
-    maximum_parallel_updates: 1
-
-wire_format:
-  transport: USART2 through ST-LINK Virtual COM Port
-  uart:
-    baud_rate: 115200
-    data_bits: 8
-    parity: none
-    stop_bits: 1
+    allowed_statuses:
+      - draft
+      - candidate_for_alignment
+      - implementation_aligned
+      - verified_baseline
+      - deprecated
+    promotion_rule: >-
+      Promotion to verified_baseline requires matching PC and MCU implementations,
+      passing shared test vectors, hardware interoperability evidence, pinned commits,
+      and human approval recorded in this repository.
+  authority:
+    repository: host-device-control-poc-system
+    path: protocol/protocol.yaml
+    rule: specification_precedes_implementation
   byte_order: little_endian
-  frame:
-    sof: [0xA5, 0x5A]
-    protocol_version:
+  text_encoding: utf_8
+  scalar_encoding:
+    unsigned_integers: little_endian
+    float32: ieee_754_binary32_little_endian
+    crc16_storage: little_endian
+
+transport_profile:
+  name: st_link_vcp_uart
+  physical_path: st_link_virtual_com_port
+  baud_rate_bps: 115200
+  data_bits: 8
+  parity: none
+  stop_bits: 1
+  flow_control: none
+  duplex: full_duplex
+
+framing:
+  sof:
+    bytes: [0xA5, 0x5A]
+    included_in_crc: false
+  fields:
+    - name: version
+      offset_bytes: 2
       type: uint8
-      value: 0x01
-    message_id:
-      type: uint16
-    flags:
+      size_bytes: 1
+    - name: message_id
+      offset_bytes: 3
       type: uint8
-    payload_length:
-      type: uint8
-      maximum: 48
-    sequence:
+      size_bytes: 1
+    - name: sequence
+      offset_bytes: 4
       type: uint16
-      behavior: modulo_65536
-    payload:
-      type: bytes
-    crc:
+      size_bytes: 2
+      byte_order: little_endian
+    - name: payload_length
+      offset_bytes: 6
       type: uint16
-      algorithm: CRC-16-CCITT-FALSE
-      polynomial: 0x1021
-      initial_value: 0xFFFF
-      reflect_input: false
-      reflect_output: false
-      xor_output: 0x0000
-      coverage: protocol_version_through_payload
-  flags:
-    request: 0x01
-    response: 0x02
-    telemetry: 0x04
+      size_bytes: 2
+      byte_order: little_endian
+    - name: payload
+      offset_bytes: 8
+      type: byte_array
+      size_bytes: payload_length
+    - name: crc16
+      offset_bytes: 8_plus_payload_length
+      type: uint16
+      size_bytes: 2
+      byte_order: little_endian
+  minimum_frame_size_bytes: 10
+  maximum_payload_size_bytes: 1024
+  crc:
+    algorithm: crc_16_ccitt_false
+    polynomial: 0x1021
+    initial_value: 0xFFFF
+    reflect_input: false
+    reflect_output: false
+    xor_output: 0x0000
+    covered_bytes: version_through_end_of_payload
+    check_vector:
+      input_ascii: "123456789"
+      expected: 0x29B1
+  receiver_resynchronization:
+    invalid_crc: discard_candidate_and_search_next_sof
+    invalid_length: discard_candidate_and_search_next_sof
+    unsupported_version: reject_decodable_request
+    partial_frame_timeout: discard_partial_frame
 
-id_allocation:
-  message_id_width_bits: 16
-  ranges:
-    - name: framework_health
-      start: 0x0000
-      end: 0x00FF
-    - name: application_command_response
-      start: 0x0100
-      end: 0x0FFF
-    - name: telemetry_stream
-      start: 0x2000
-      end: 0x2FFF
-  reserved:
-    - start: 0x1000
-      end: 0x1FFF
-    - start: 0x3000
-      end: 0xFFFF
+sequence_rules:
+  host_command:
+    width_bits: 16
+    zero_allowed: false
+    allocation: monotonically_incrementing_with_wrap_from_0xffff_to_1
+  direct_response:
+    copies_request_sequence: true
+  unsolicited_device_message:
+    width_bits: 16
+    allocation: independent_monotonically_incrementing_with_wrap
+  telemetry_loss_detection:
+    primary_field: payload.sample_counter
+    wraparound: uint32
 
-namespaces:
-  - name: framework
-    id: 0x0000
-    purpose: health, identity, and protocol error handling
-  - name: application
-    id: 0x0001
-    purpose: stream control and telemetry
-
-services:
-  - name: DEVICE_MANAGEMENT
-    id: 0x0001
-    namespace: framework
-  - name: STREAM_CONTROL
-    id: 0x0100
-    namespace: application
-  - name: DATA_ACQUISITION
-    id: 0x0200
-    namespace: application
-
-enums:
-  - name: DEVICE_STATE
-    underlying_type: uint8
-    values:
-      IDLE: 0
-      STREAMING: 1
-      FAULT: 2
-  - name: COMMAND_RESULT
-    underlying_type: uint8
-    values:
-      OK: 0
-      INVALID_STATE: 1
-      UNSUPPORTED: 2
-      INVALID_PAYLOAD: 3
-      TRANSPORT_BUSY: 4
-
-errors:
-  - name: INVALID_STATE
-    code: 1
-    description: Request is not valid in the current device state.
-  - name: UNSUPPORTED
-    code: 2
-    description: Message identifier or operation is not supported.
-  - name: INVALID_PAYLOAD
-    code: 3
-    description: Payload length or content is invalid.
-  - name: TRANSPORT_BUSY
-    code: 4
-    description: Response could not be queued by the bounded transport.
+state_model:
+  initial_state: idle
+  states:
+    - { name: idle, value: 0x00 }
+    - { name: streaming, value: 0x01 }
+  transitions:
+    - command: START_STREAM
+      allowed_from: [idle]
+      success_state: streaming
+    - command: STOP_STREAM
+      allowed_from: [streaming]
+      success_state: idle
+  invalid_transition_result: INVALID_STATE
 
 messages:
-  - name: PING_REQUEST
-    id: 0x0001
-    namespace: framework
-    service: DEVICE_MANAGEMENT
-    category: command_request
-    direction: coordinator_to_node
-    flags: request
-    payload_length: 0
-    response: PING_RESPONSE
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+  - name: PING
+    id: 0x01
+    direction: pc_to_mcu
+    kind: command
+    allowed_states: [idle, streaming]
+    payload: []
+    valid_responses: [ACK, NACK]
 
-  - name: GET_DEVICE_INFO_REQUEST
-    id: 0x0002
-    namespace: framework
-    service: DEVICE_MANAGEMENT
-    category: command_request
-    direction: coordinator_to_node
-    flags: request
-    payload_length: 0
-    response: DEVICE_INFO_RESPONSE
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+  - name: GET_DEVICE_INFO
+    id: 0x02
+    direction: pc_to_mcu
+    kind: command
+    allowed_states: [idle, streaming]
+    payload: []
+    valid_responses: [DEVICE_INFO, NACK]
 
-  - name: ERROR_RESPONSE
-    id: 0x00E0
-    namespace: framework
-    service: DEVICE_MANAGEMENT
-    category: command_response
-    direction: node_to_coordinator
-    flags: response
-    correlation: echoed_request_sequence
+  - name: SET_STREAM_CONFIG
+    id: 0x03
+    direction: pc_to_mcu
+    kind: command
+    allowed_states: [idle]
     payload:
-      - {name: rejected_message_id, type: uint16, offset: 0}
-      - {name: result, type: uint8, offset: 2, enum: COMMAND_RESULT}
-      - {name: device_state, type: uint8, offset: 3, enum: DEVICE_STATE}
-    payload_length: 4
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+      - name: interval_us
+        type: uint16
+        unit: microsecond
+        valid_range: [1000, 60000]
+        poc_default: 5000
+    valid_responses: [ACK, NACK]
 
-  - name: PING_RESPONSE
-    id: 0x0081
-    namespace: framework
-    service: DEVICE_MANAGEMENT
-    category: command_response
-    direction: node_to_coordinator
-    flags: response
-    correlation: echoed_request_sequence
+  - name: START_STREAM
+    id: 0x04
+    direction: pc_to_mcu
+    kind: command
+    allowed_states: [idle]
+    payload: []
+    valid_responses: [ACK, NACK]
+    success_effect: enter_streaming_and_reset_stream_counters
+
+  - name: STOP_STREAM
+    id: 0x05
+    direction: pc_to_mcu
+    kind: command
+    allowed_states: [streaming]
+    payload: []
+    valid_responses: [ACK, NACK]
+    success_effect: enter_idle_and_stop_telemetry
+
+  - name: ACK
+    id: 0x80
+    direction: mcu_to_pc
+    kind: response
+    sequence_rule: copy_request_sequence
     payload:
-      - {name: uptime_ms, type: uint32, offset: 0, behavior: saturating}
-      - {name: device_state, type: uint8, offset: 4, enum: DEVICE_STATE}
-      - {name: protocol_version, type: uint8, offset: 5}
-    payload_length: 6
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+      - name: request_message_id
+        type: uint8
+      - name: result_code
+        type: uint8
+        required_value: 0x00
+      - name: device_state
+        type: uint8
 
-  - name: DEVICE_INFO_RESPONSE
-    id: 0x0082
-    namespace: framework
-    service: DEVICE_MANAGEMENT
-    category: command_response
-    direction: node_to_coordinator
-    flags: response
-    correlation: echoed_request_sequence
+  - name: NACK
+    id: 0x81
+    direction: mcu_to_pc
+    kind: response
+    sequence_rule: copy_request_sequence
     payload:
-      - {name: protocol_version, type: uint8, offset: 0}
-      - {name: firmware_major, type: uint8, offset: 1}
-      - {name: firmware_minor, type: uint8, offset: 2}
-      - {name: firmware_patch, type: uint8, offset: 3}
-      - {name: board_id, type: uint8, offset: 4}
-      - {name: transport_id, type: uint8, offset: 5}
-      - {name: sample_period_us, type: uint16, offset: 6}
-      - {name: maximum_payload_length, type: uint8, offset: 8}
-      - {name: capability_flags, type: uint8, offset: 9}
-      - {name: reserved, type: uint16, offset: 10, required_value: 0}
-    payload_length: 12
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+      - name: request_message_id
+        type: uint8
+      - name: result_code
+        type: uint8
+      - name: device_state
+        type: uint8
 
-  - name: START_STREAM_REQUEST
-    id: 0x0100
-    namespace: application
-    service: STREAM_CONTROL
-    category: command_request
-    direction: coordinator_to_node
-    flags: request
-    payload_length: 0
-    valid_states: [IDLE]
-    response: START_STREAM_RESPONSE
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
-
-  - name: START_STREAM_RESPONSE
-    id: 0x0101
-    namespace: application
-    service: STREAM_CONTROL
-    category: command_response
-    direction: node_to_coordinator
-    flags: response
-    correlation: echoed_request_sequence
+  - name: DEVICE_INFO
+    id: 0x82
+    direction: mcu_to_pc
+    kind: response
+    sequence_rule: copy_request_sequence
     payload:
-      - {name: result, type: uint8, offset: 0, enum: COMMAND_RESULT}
-      - {name: device_state, type: uint8, offset: 1, enum: DEVICE_STATE}
-    payload_length: 2
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+      - name: device_type
+        type: uint16
+        poc_value: 0x4460
+      - name: firmware_major
+        type: uint8
+      - name: firmware_minor
+        type: uint8
+      - name: firmware_patch
+        type: uint8
+      - name: maximum_stream_rate_hz
+        type: uint16
+      - name: device_name_length
+        type: uint8
+      - name: device_name
+        type: utf8_byte_array
+        size_bytes: device_name_length
+        maximum_size_bytes: 32
 
-  - name: STOP_STREAM_REQUEST
-    id: 0x0102
-    namespace: application
-    service: STREAM_CONTROL
-    category: command_request
-    direction: coordinator_to_node
-    flags: request
-    payload_length: 0
-    valid_states: [STREAMING]
-    response: STOP_STREAM_RESPONSE
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
-
-  - name: STOP_STREAM_RESPONSE
-    id: 0x0103
-    namespace: application
-    service: STREAM_CONTROL
-    category: command_response
-    direction: node_to_coordinator
-    flags: response
-    correlation: echoed_request_sequence
+  - name: DEVICE_STATUS
+    id: 0x83
+    direction: mcu_to_pc
+    kind: response_or_event
     payload:
-      - {name: result, type: uint8, offset: 0, enum: COMMAND_RESULT}
-      - {name: device_state, type: uint8, offset: 1, enum: DEVICE_STATE}
-    payload_length: 2
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+      - name: state
+        type: uint8
+      - name: status_flags
+        type: uint16
 
-  - name: TELEMETRY
-    id: 0x2000
-    namespace: application
-    service: DATA_ACQUISITION
-    category: stream
-    direction: node_to_coordinator
-    flags: telemetry
+  - name: TELEMETRY_SAMPLE
+    id: 0x90
+    direction: mcu_to_pc
+    kind: event
+    allowed_state: streaming
     payload:
-      - {name: uptime_ms, type: uint32, offset: 0, behavior: saturating}
-      - {name: sine_sample, type: int16, offset: 4}
-      - {name: device_state, type: uint8, offset: 6, enum: DEVICE_STATE}
-      - {name: status_flags, type: uint8, offset: 7}
-      - {name: event_overflow_count, type: uint16, offset: 8, behavior: saturating}
-      - {name: uart_rx_overflow_count, type: uint16, offset: 10, behavior: saturating}
-      - {name: uart_tx_overflow_count, type: uint16, offset: 12, behavior: saturating}
-    payload_length: 14
-    sequence_policy:
-      field: frame.sequence
-      behavior: sample_attempt_modulo_65536
-      loss_detection: gaps_are_detectable
-    timestamp_policy:
-      field: payload.uptime_ms
-      unit: millisecond
-      source: device_timebase
-    delivery_policy: detectable_drop_allowed
-    security:
-      authentication_required: false
-      encryption_required: false
-      allowed_before_session: true
-      privilege: laboratory_poc
+      - name: sample_counter
+        type: uint32
+      - name: device_tick_us
+        type: uint32
+      - name: sine_value
+        type: float32_ieee754
+      - name: status_flags
+        type: uint16
+    payload_size_bytes: 14
 
-compatibility:
-  version_field: wire_format.frame.protocol_version
-  current_wire_version: 0x01
-  policy: exact_wire_version_for_poc
-  unknown_message_policy: ERROR_RESPONSE_with_UNSUPPORTED
-  unknown_flag_policy: reject_request
-  trailing_payload_policy: reject
-  sequence_wrap: modulo_65536
+  - name: ERROR_REPORT
+    id: 0x91
+    direction: mcu_to_pc
+    kind: event
+    payload:
+      - name: error_code
+        type: uint16
+      - name: detail
+        type: uint32
 
-code_generation:
-  status: manual_implementation
-  authoritative_source: Protocol/Spec/Host_Device_Control_PoC_protocol.yaml
-  generated_outputs: []
-  checked_manual_outputs:
-    - Protocol/Inc/protocol_messages.h
-    - Protocol/Inc/protocol.h
-  note: The repository validator checks message-ID consistency; it does not claim full code generation or semantic equivalence.
+result_codes:
+  - { name: OK, value: 0x00 }
+  - { name: INVALID_COMMAND, value: 0x01 }
+  - { name: INVALID_LENGTH, value: 0x02 }
+  - { name: INVALID_VALUE, value: 0x03 }
+  - { name: INVALID_STATE, value: 0x04 }
+  - { name: UNSUPPORTED_VERSION, value: 0x05 }
+  - { name: INTERNAL_ERROR, value: 0x06 }
+
+status_flags:
+  - { name: NONE, mask: 0x0000 }
+  - { name: RX_OVERFLOW_OBSERVED, mask: 0x0001 }
+  - { name: TX_OVERFLOW_OBSERVED, mask: 0x0002 }
+  - { name: UART_ERROR_OBSERVED, mask: 0x0004 }
+
+host_timeouts_ms:
+  get_device_info: 1000
+  command_default: 1000
+  stop_stream: 1500
+  partial_frame: 250
+
+error_behavior:
+  invalid_crc: discard_frame_without_response_and_resynchronize
+  invalid_payload_length: discard_candidate_without_response_and_resynchronize
+  unsupported_version: send_nack_when_request_header_is_decodable
+  unknown_message_id: send_nack_when_request_is_decodable
+  command_in_invalid_state: send_nack_invalid_state
+  host_timeout: fail_command_without_assuming_device_state_change
+  duplicate_response: ignore_after_first_matching_response
+  unexpected_response_sequence: reject_as_unmatched_response
+
+compatibility_rules:
+  compatible_without_wire_version_change:
+    - documentation_clarification_without_wire_change
+    - addition_of_optional_host_behavior_not_sent_on_wire
+    - addition_of_new_message_id_not_required_by_existing_peers
+  requires_wire_version_change:
+    - field_order_or_width_change
+    - crc_algorithm_or_coverage_change
+    - existing_message_payload_change
+    - endian_change
+    - reinterpretation_of_existing_id_or_result_code

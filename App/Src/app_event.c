@@ -8,7 +8,7 @@
 //
 // Responsibilities:
 //     - Coalesces UART event flags.
-//     - Counts pending 5 ms ticks without dynamic allocation.
+//     - Counts pending sample-timer ticks without dynamic allocation.
 //     - Protects event snapshots with a bounded interrupt critical section.
 
 #include "app_event.h"
@@ -75,7 +75,7 @@ void app_event_init(void)
  *     app_event_post_tick_from_isr
  *
  * Purpose:
- *     Posts one pending 5 ms tick from interrupt context.
+ *     Posts one pending sample-timer tick from interrupt context.
  *
  * Input Parameters:
  *     None.
