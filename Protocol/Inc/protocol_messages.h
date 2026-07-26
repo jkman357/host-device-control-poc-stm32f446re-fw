@@ -1,4 +1,17 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     protocol_messages.h
+//
+// Purpose:
+//     Defines protocol message identifiers, result codes, and stream limits.
+//
+// Public Contract:
+//     - Provides named constants for the PoC wire contract.
+//     - Defines finite result-code and status-flag domains.
+//
+// Notes:
+//     These constants mirror the current PoC protocol snapshot.
 
 #ifndef PROTOCOL_MESSAGES_H
 #define PROTOCOL_MESSAGES_H

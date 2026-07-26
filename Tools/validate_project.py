@@ -101,6 +101,7 @@ def validate_required_files() -> None:
         "Tests/serial_baud_profile_test.c",
         "Tests/app_baud_policy_test.c",
         "Tools/build_all_baud_profiles.sh",
+        "Tools/check_coding_rules.py",
         "docs/Baud_Rate_Profiles.md",
         "docs/Hardware_Baud_Test_Record.md",
         "Tests/app_event_ordering_test.c",
@@ -432,7 +433,7 @@ def validate_waveform_rotation() -> None:
     rotation_test = read_text("Tests/app_waveform_rotation_test.c")
 
     app_tokens = [
-        "#define FW_VERSION_PATCH                       (7u)",
+        "#define FW_VERSION_PATCH                       (8u)",
         "#define WAVEFORM_SWITCH_INTERVAL_US             (10000000u)",
         "s_waveform = WAVEFORM_TYPE_SINE;",
         "s_waveform = waveform_generator_next(s_waveform);",
@@ -448,8 +449,8 @@ def validate_waveform_rotation() -> None:
         "WAVEFORM_TYPE_TRIANGLE",
         "WAVEFORM_TYPE_ECG_70_BPM",
         "WAVEFORM_ECG_70_BPM_PERIOD_US (857143u)",
-        "static float waveform_sine_polynomial(float angle)",
-        "waveform_smooth_pulse",
+        "static float waveform_generator_sine_polynomial(float angle)",
+        "waveform_generator_smooth_pulse",
     ]
     for token in generator_tokens:
         if token not in (generator_header + generator_source):
@@ -482,7 +483,8 @@ def validate_newlib_syscalls() -> None:
         "int _lseek(int file_descriptor, int offset, int origin)",
         "int _read(int file_descriptor, char *buffer, int length)",
         "int _write(int file_descriptor, char *buffer, int length)",
-        "return -1;",
+        "#define SYSCALL_RESULT_ERROR (-1)",
+        "return SYSCALL_RESULT_ERROR;",
     ]
     for token in required_tokens:
         if token not in syscalls:

@@ -1,12 +1,46 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     protocol_roundtrip_test.c
+//
+// Purpose:
+//     Verifies protocol encoding, parsing, CRC, and timeout behavior.
+//
+// Responsibilities:
+//     - Checks byte-exact frame vectors.
+//     - Checks encode/decode round trips and parser error accounting.
+//     - Checks partial-frame timeout recovery.
+//
+// Notes:
+//     This host test uses assertions and does not execute on the MCU target.
 
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "protocol.h"
 #include "protocol_messages.h"
 
+/*
+ * Function:
+ *     main
+ *
+ * Purpose:
+ *     Executes the protocol round-trip and CRC rejection host test.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     EXIT_SUCCESS when all assertions pass.
+ *
+ * Notes:
+ *     Assertion failure terminates the host process.
+ */
 int main(void)
 {
     uint8_t payload[14] = { 0u };
@@ -53,5 +87,5 @@ int main(void)
 
     assert(result == PROTOCOL_PARSE_CRC_ERROR);
 
-    return 0;
+    return EXIT_SUCCESS;
 }

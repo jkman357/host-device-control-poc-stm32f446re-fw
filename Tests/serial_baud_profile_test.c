@@ -1,8 +1,22 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     serial_baud_profile_test.c
+//
+// Purpose:
+//     Verifies all compile-time UART Baud Rate profile calculations.
+//
+// Responsibilities:
+//     - Checks supported profile membership and command-only classification.
+//     - Checks BRR, actual Baud Rate error, and effective stream interval limits.
+//
+// Notes:
+//     This host test uses assertions and does not execute on the MCU target.
 
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "serial_baud.h"
 
@@ -40,7 +54,24 @@ static const uint32_t s_supported_rates[] =
 };
 #undef TEST_LIST_ENTRY
 
-static uint32_t effective_minimum_interval_us(uint32_t rate)
+/*
+ * Function:
+ *     serial_baud_test_effective_minimum_interval_us
+ *
+ * Purpose:
+ *     Calculates the expected effective stream interval for one Baud Rate profile.
+ *
+ * Input Parameters:
+ *     rate:
+ *         Requested Baud Rate in bits per second.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Zero for command-only profiles, otherwise the effective minimum interval in microseconds.
+ */
+static uint32_t serial_baud_test_effective_minimum_interval_us(uint32_t rate)
 {
     uint32_t calculated;
 
@@ -61,6 +92,25 @@ static uint32_t effective_minimum_interval_us(uint32_t rate)
         : TEST_PROTOCOL_MIN_INTERVAL_US;
 }
 
+/*
+ * Function:
+ *     main
+ *
+ * Purpose:
+ *     Executes the complete compile-time Baud Rate profile host test.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     EXIT_SUCCESS when all assertions pass.
+ *
+ * Notes:
+ *     Assertion failure terminates the host process.
+ */
 int main(void)
 {
     size_t index;
@@ -85,10 +135,10 @@ int main(void)
                <= SERIAL_BAUD_MAX_ERROR_PPM);
         assert(SERIAL_BAUD_IS_COMMAND_ONLY(expected->rate)
                == expected->command_only);
-        assert(effective_minimum_interval_us(expected->rate)
+        assert(serial_baud_test_effective_minimum_interval_us(expected->rate)
                == expected->minimum_interval_us);
     }
 
     assert(SERIAL_BAUD_IS_SUPPORTED(14400u) == 0u);
-    return 0;
+    return EXIT_SUCCESS;
 }

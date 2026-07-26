@@ -144,7 +144,7 @@ def main() -> None:
         lambda project: mutate_file(
             project,
             "App/Src/waveform_generator.c",
-            "static float waveform_sine_polynomial(float angle)",
+            "static float waveform_generator_sine_polynomial(float angle)",
             "static float waveform_linear_approximation(float angle)",
         ),
         "waveform generator incomplete",

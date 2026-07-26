@@ -4,7 +4,7 @@ Bare-metal, event-driven firmware for the NUCLEO-F446RE. The ST-LINK Virtual COM
 
 ## Corrected baseline
 
-This package is based on MCU commit `04f8419` and extends the validated waveform baseline to firmware v0.2.7:
+This package is based on MCU commit `6b02740` and applies a source-code compliance refactor as firmware v0.2.8:
 
 - USART2 supports the same 11 selectable baud values exposed by the PC application: 1,200, 2,400, 4,800, 9,600, 19,200, 38,400, 57,600, 115,200, 230,400, 460,800 and 921,600.
 - MCU baud selection is compile-time; default is 460,800. The firmware does not auto-detect or dynamically follow the PC application's selection.
@@ -15,6 +15,12 @@ This package is based on MCU commit `04f8419` and extends the validated waveform
 - ISR-to-main transfer uses a fixed-capacity ordered event queue. RX bytes and TIM6 ticks retain their observed interrupt order, so START/STOP boundaries are deterministic.
 - The synthetic signal rotates every 10 seconds of active streaming: sine → square → triangle → ECG at 70 bpm → sine.
 - Explicit `_close`, `_lseek`, `_read`, and `_write` stubs prevent GCC 14/newlib-nano `libnosys` warnings from being promoted to a failed STM32CubeIDE build.
+- Every Product-owned `.c` and `.h` file now has a standardized File Header.
+- Every Product-owned function declaration and definition now has an immediate complete Function Header.
+- Product source uses English comments, `//` for general comments, module-prefixed functions, named constants for system values, and no dynamic allocation.
+- Protocol float serialization no longer uses union type-punning; it copies the verified object representation and writes explicit little-endian bytes.
+- Unsolicited telemetry sequence rollover now returns to sequence 1 instead of emitting prohibited sequence 0.
+- `Tools/check_coding_rules.py` provides a focused source gate without expanding documentation CI.
 
 ## Scope
 
@@ -86,6 +92,7 @@ This firmware has no POSIX file-descriptor service. `Core/Src/syscalls.c` suppli
 ## Build and validation
 
 ```sh
+python3 Tools/check_coding_rules.py
 python3 Tools/validate_project.py
 make host-test
 python3 Tests/test_validate_project.py

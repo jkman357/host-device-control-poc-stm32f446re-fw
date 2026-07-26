@@ -1,6 +1,19 @@
 # Global Object Register
 
-All mutable module objects are file-static. The vector table is the only externally linked constant object. No heap allocation is used.
+## GOR-CORE-001
 
+| Field | Value |
+|---|---|
+| Global Object ID | `GOR-CORE-001` |
+| Symbol | `g_vector_table` |
+| Type | `const startup_isr_callback_t[STARTUP_VECTOR_COUNT]` |
+| Owner | Startup module |
+| Writer | Link-time initialization only |
+| Reader | Cortex-M4 exception and interrupt dispatch hardware |
+| Synchronization | Immutable after link; no runtime synchronization required |
+| Initialization | Linker places the initialized object in `.isr_vector` at the Flash vector origin |
+| Lifetime | Entire firmware image lifetime |
+| Reason | Required by Cortex-M4 startup and interrupt-vector integration |
+| Verification | Linker-layout test, independent target build, and target reset/interrupt testing |
 
-Application waveform state is held in the file-static objects `s_waveform`, `s_waveform_phase_us`, and `s_waveform_elapsed_us`. The waveform generator itself has no mutable state.
+All mutable Product-owned module objects are file-static. No heap allocation is used.

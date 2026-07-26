@@ -1,4 +1,17 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     stm32f446_minimal.h
+//
+// Purpose:
+//     Defines the minimal STM32F446 register map used by the PoC.
+//
+// Public Contract:
+//     - Defines only the register blocks and NVIC operations required by this firmware.
+//     - Provides bounded inline helpers for interrupt enable and priority configuration.
+//
+// Notes:
+//     This Product-owned minimal map is not a replacement for the complete vendor device header.
 
 #ifndef STM32F446_MINIMAL_H
 #define STM32F446_MINIMAL_H
@@ -71,16 +84,56 @@ typedef struct
 #define NVIC_ISER ((volatile uint32_t *)0xE000E100u)
 #define NVIC_IPR ((volatile uint8_t *)0xE000E400u)
 
+#define NVIC_INTERRUPTS_PER_SET_REGISTER (32u)
+#define NVIC_PRIORITY_FIELD_SHIFT (4u)
+
+/*
+ * Function:
+ *     stm32_nvic_enable_irq
+ *
+ * Purpose:
+ *     Enables one NVIC interrupt line.
+ *
+ * Input Parameters:
+ *     irq_number:
+ *         Zero-based external interrupt number.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static inline void stm32_nvic_enable_irq(uint32_t irq_number)
 {
-    NVIC_ISER[irq_number / 32u] = 1u << (irq_number % 32u);
+    NVIC_ISER[irq_number / NVIC_INTERRUPTS_PER_SET_REGISTER] =
+        1u << (irq_number % NVIC_INTERRUPTS_PER_SET_REGISTER);
 }
 
+/*
+ * Function:
+ *     stm32_nvic_set_priority
+ *
+ * Purpose:
+ *     Programs the implemented high-order priority bits for one NVIC interrupt.
+ *
+ * Input Parameters:
+ *     irq_number:
+ *         Zero-based external interrupt number.
+ *     priority:
+ *         Logical preemption-priority value supported by the target.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static inline void stm32_nvic_set_priority(
     uint32_t irq_number,
     uint8_t priority)
 {
-    NVIC_IPR[irq_number] = (uint8_t)(priority << 4u);
+    NVIC_IPR[irq_number] = (uint8_t)(priority << NVIC_PRIORITY_FIELD_SHIFT);
 }
 
 #endif

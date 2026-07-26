@@ -1,4 +1,19 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     serial_transport.c
+//
+// Purpose:
+//     Implements the bounded interrupt-driven USART2 transport adapter.
+//
+// Responsibilities:
+//     - Configures USART2 for the selected compile-time Baud Rate profile.
+//     - Maintains a fixed-capacity non-blocking transmit ring buffer.
+//     - Posts received bytes and UART errors from interrupt context.
+//     - Counts overflow and hardware errors without wrapping.
+//
+// Notes:
+//     USART2 shares the TIM6 preemption priority to preserve event production order.
 
 #include "serial_transport.h"
 
@@ -35,10 +50,12 @@
 #define USART2_BAUD_ERROR_PPM \
     SERIAL_BAUD_ERROR_PPM(SERIAL_BAUD_PERIPHERAL_CLOCK_HZ, \
                           SERIAL_TRANSPORT_BAUD_RATE)
+#define USART_BRR_MAX_VALUE (0xFFFFu)
+#define TX_RING_RESERVED_SLOT_COUNT (1u)
 
 _Static_assert(SERIAL_BAUD_IS_SUPPORTED(SERIAL_TRANSPORT_BAUD_RATE) != 0u,
                "Unsupported USART2 baud rate.");
-_Static_assert((USART2_BRR_VALUE > 0u) && (USART2_BRR_VALUE <= 0xFFFFu),
+_Static_assert((USART2_BRR_VALUE > 0u) && (USART2_BRR_VALUE <= USART_BRR_MAX_VALUE),
                "USART2 BRR is outside the 16-bit register range.");
 _Static_assert(USART2_BAUD_ERROR_PPM <= SERIAL_BAUD_MAX_ERROR_PPM,
                "USART2 baud error exceeds the allowed limit.");
@@ -55,6 +72,22 @@ static uint8_t s_tx_ring[SERIAL_TRANSPORT_TX_RING_CAPACITY];
 static volatile uint32_t s_tx_overflow_count;
 static volatile uint32_t s_uart_error_count;
 
+/*
+ * Function:
+ *     serial_transport_enter_critical
+ *
+ * Purpose:
+ *     Disables interrupts and captures the prior interrupt-mask state.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     The prior PRIMASK value required by serial_transport_leave_critical.
+ */
 static uint32_t serial_transport_enter_critical(void)
 {
     uint32_t primask;
@@ -69,11 +102,49 @@ static uint32_t serial_transport_enter_critical(void)
     return primask;
 }
 
+/*
+ * Function:
+ *     serial_transport_leave_critical
+ *
+ * Purpose:
+ *     Restores the interrupt-mask state captured before a bounded critical section.
+ *
+ * Input Parameters:
+ *     primask:
+ *         PRIMASK value returned by serial_transport_enter_critical.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static void serial_transport_leave_critical(uint32_t primask)
 {
     __asm volatile("MSR primask, %0" : : "r"(primask) : "memory");
 }
 
+/*
+ * Function:
+ *     serial_transport_increment_saturated
+ *
+ * Purpose:
+ *     Increments an interrupt-shared diagnostic counter without permitting wraparound.
+ *
+ * Input Parameters:
+ *     value:
+ *         Pointer to the volatile counter to inspect and update.
+ *
+ * Output Parameters:
+ *     value:
+ *         Receives the incremented value unless already saturated.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Called from interrupt or main context only under the documented ownership rules.
+ */
 static void serial_transport_increment_saturated(volatile uint32_t *value)
 {
     if (*value < UINT32_MAX)
@@ -82,6 +153,25 @@ static void serial_transport_increment_saturated(volatile uint32_t *value)
     }
 }
 
+/*
+ * Function:
+ *     serial_transport_init
+ *
+ * Purpose:
+ *     Initializes the transmit queue, counters, and USART2 hardware profile.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Call once before enabling application processing.
+ */
 void serial_transport_init(void)
 {
     volatile uint32_t discard;
@@ -106,7 +196,7 @@ void serial_transport_init(void)
     discard = USART2->dr;
     (void)discard;
 
-    /* Match TIM6 priority to serialize all ordered event-queue producers. */
+    // Match TIM6 priority to serialize all ordered event-queue producers.
     stm32_nvic_set_priority(USART2_IRQ_NUMBER, USART2_IRQ_PRIORITY);
     stm32_nvic_enable_irq(USART2_IRQ_NUMBER);
 
@@ -115,6 +205,33 @@ void serial_transport_init(void)
         USART_CR1_RE | USART_CR1_TE | USART_CR1_RXNEIE | USART_CR1_UE;
 }
 
+/*
+ * Function:
+ *     serial_transport_write
+ *
+ * Purpose:
+ *     Queues a complete byte sequence for non-blocking USART2 transmission.
+ *
+ * Input Parameters:
+ *     data:
+ *         Pointer to bytes to queue.
+ *     length:
+ *         Number of bytes to queue.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     SERIAL_TRANSPORT_RESULT_OK:
+ *         All bytes were queued.
+ *     SERIAL_TRANSPORT_RESULT_INVALID_ARGUMENT:
+ *         The data pointer was NULL for a nonzero length.
+ *     SERIAL_TRANSPORT_RESULT_NO_CAPACITY:
+ *         Available queue capacity was insufficient.
+ *
+ * Notes:
+ *     Runs in main context and uses a bounded critical section.
+ */
 serial_transport_result_t serial_transport_write(
     const uint8_t *data,
     size_t length)
@@ -130,7 +247,7 @@ serial_transport_result_t serial_transport_write(
 
     primask = serial_transport_enter_critical();
     free_capacity =
-        (uint16_t)((s_tx_tail - s_tx_head - 1u) & TX_RING_MASK);
+        (uint16_t)((s_tx_tail - s_tx_head - TX_RING_RESERVED_SLOT_COUNT) & TX_RING_MASK);
 
     if (length > free_capacity)
     {
@@ -151,21 +268,88 @@ serial_transport_result_t serial_transport_write(
     return SERIAL_TRANSPORT_RESULT_OK;
 }
 
+/*
+ * Function:
+ *     serial_transport_get_rx_overflow_count
+ *
+ * Purpose:
+ *     Returns the saturated count of received bytes rejected by the event queue.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Current saturated receive-overflow count.
+ */
 uint32_t serial_transport_get_rx_overflow_count(void)
 {
     return app_event_get_overflow_count();
 }
 
+/*
+ * Function:
+ *     serial_transport_get_tx_overflow_count
+ *
+ * Purpose:
+ *     Returns the saturated count of transmit writes rejected for insufficient capacity.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Current saturated transmit-overflow count.
+ */
 uint32_t serial_transport_get_tx_overflow_count(void)
 {
     return s_tx_overflow_count;
 }
 
+/*
+ * Function:
+ *     serial_transport_get_uart_error_count
+ *
+ * Purpose:
+ *     Returns the saturated count of observed USART2 hardware errors.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Current saturated UART-error count.
+ */
 uint32_t serial_transport_get_uart_error_count(void)
 {
     return s_uart_error_count;
 }
 
+/*
+ * Function:
+ *     USART2_IRQHandler
+ *
+ * Purpose:
+ *     Services bounded USART2 receive, error, and transmit-ready conditions.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Executes in interrupt context and does not block or parse protocol frames.
+ */
 void USART2_IRQHandler(void)
 {
     uint32_t status;
@@ -176,7 +360,7 @@ void USART2_IRQHandler(void)
     {
         volatile uint32_t discard;
 
-        /* Reading DR after SR clears PE/FE/NE/ORE on STM32F4 USART. */
+        // Reading DR after SR clears PE, FE, NE, and ORE on the STM32F4 USART.
         discard = USART2->dr;
         (void)discard;
 

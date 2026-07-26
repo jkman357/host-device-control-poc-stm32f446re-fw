@@ -1,8 +1,23 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     app.c
+//
+// Purpose:
+//     Implements the firmware application state machine and command processing.
+//
+// Responsibilities:
+//     - Validates and processes Host protocol commands.
+//     - Owns streaming state, timing, sequence numbers, and waveform rotation.
+//     - Encodes bounded responses and telemetry through the transport adapter.
+//
+// Notes:
+//     All application behavior executes in main context through ordered events.
 
 #include "app.h"
 
 #include <stdbool.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,10 +30,29 @@
 
 #define FW_VERSION_MAJOR                       (0u)
 #define FW_VERSION_MINOR                       (2u)
-#define FW_VERSION_PATCH                       (7u)
+#define FW_VERSION_PATCH                       (8u)
 #define MICROSECONDS_PER_SECOND                (1000000u)
 #define WAVEFORM_SWITCH_INTERVAL_US             (10000000u)
-#define TELEMETRY_PAYLOAD_LENGTH               (14u)
+#define ACK_NACK_PAYLOAD_LENGTH                 (3u)
+#define ACK_NACK_REQUEST_ID_OFFSET               (0u)
+#define ACK_NACK_RESULT_OFFSET                   (1u)
+#define ACK_NACK_STATE_OFFSET                    (2u)
+#define DEVICE_INFO_FIXED_PAYLOAD_LENGTH         (8u)
+#define DEVICE_INFO_DEVICE_TYPE_OFFSET           (0u)
+#define DEVICE_INFO_VERSION_MAJOR_OFFSET         (2u)
+#define DEVICE_INFO_VERSION_MINOR_OFFSET         (3u)
+#define DEVICE_INFO_VERSION_PATCH_OFFSET         (4u)
+#define DEVICE_INFO_MAX_STREAM_RATE_OFFSET       (5u)
+#define DEVICE_INFO_NAME_LENGTH_OFFSET           (7u)
+#define DEVICE_INFO_NAME_OFFSET                  (8u)
+#define STREAM_CONFIG_PAYLOAD_LENGTH             (2u)
+#define TELEMETRY_PAYLOAD_LENGTH                 (14u)
+#define TELEMETRY_SAMPLE_COUNTER_OFFSET          (0u)
+#define TELEMETRY_DEVICE_TICK_OFFSET             (4u)
+#define TELEMETRY_SAMPLE_VALUE_OFFSET            (8u)
+#define TELEMETRY_STATUS_FLAGS_OFFSET            (12u)
+#define APP_SEQUENCE_FIRST                       (1u)
+#define APP_LED_TOGGLE_SAMPLE_MASK               (0x7Fu)
 #define TELEMETRY_FRAME_LENGTH                 \
     (PROTOCOL_FRAME_OVERHEAD_LENGTH + TELEMETRY_PAYLOAD_LENGTH)
 #define APP_STREAMING_SUPPORTED                \
@@ -65,29 +99,55 @@ static uint32_t s_waveform_phase_us;
 static uint32_t s_waveform_elapsed_us;
 static uint32_t s_sample_counter;
 static waveform_type_t s_waveform;
-static bool s_uart_error_seen;
+static bool s_has_uart_error;
 
 static const uint8_t s_name[] =
 {
     'N', 'U', 'C', 'L', 'E', 'O', '-', 'F', '4', '4', '6', 'R', 'E'
 };
 
+/*
+ * Function:
+ *     app_send_frame
+ *
+ * Purpose:
+ *     Encodes one protocol frame and submits it to the bounded serial transport.
+ *
+ * Input Parameters:
+ *     message_id:
+ *         Protocol message identifier to encode.
+ *     sequence:
+ *         Protocol sequence number to encode.
+ *     payload:
+ *         Pointer to payload bytes, or NULL when payload_length is zero.
+ *     payload_length:
+ *         Number of valid payload bytes.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     true:
+ *         The frame was encoded and accepted by the transport.
+ *     false:
+ *         Encoding failed or the transport could not accept the frame.
+ */
 static bool app_send_frame(uint8_t message_id,
                            uint16_t sequence,
                            const uint8_t *payload,
                            uint16_t payload_length)
 {
     size_t encoded_length;
-    bool encoded;
+    bool is_encoded;
 
-    encoded = protocol_encode_frame(message_id,
+    is_encoded = protocol_encode_frame(message_id,
                                     sequence,
                                     payload,
                                     payload_length,
                                     s_encoded,
                                     sizeof(s_encoded),
                                     &encoded_length);
-    if (!encoded)
+    if (is_encoded == false)
     {
         return false;
     }
@@ -96,13 +156,32 @@ static bool app_send_frame(uint8_t message_id,
         == SERIAL_TRANSPORT_RESULT_OK;
 }
 
+/*
+ * Function:
+ *     app_send_ack
+ *
+ * Purpose:
+ *     Builds and sends an ACK response for a valid Host request.
+ *
+ * Input Parameters:
+ *     request_id:
+ *         Message identifier of the acknowledged request.
+ *     sequence:
+ *         Sequence number copied from the request.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static void app_send_ack(uint8_t request_id, uint16_t sequence)
 {
-    const uint8_t payload[3] =
+    const uint8_t payload[ACK_NACK_PAYLOAD_LENGTH] =
     {
-        request_id,
-        (uint8_t)PROTOCOL_RESULT_OK,
-        (uint8_t)s_state
+        [ACK_NACK_REQUEST_ID_OFFSET] = request_id,
+        [ACK_NACK_RESULT_OFFSET] = (uint8_t)PROTOCOL_RESULT_OK,
+        [ACK_NACK_STATE_OFFSET] = (uint8_t)s_state
     };
 
     (void)app_send_frame(PROTOCOL_MESSAGE_ACK,
@@ -111,15 +190,36 @@ static void app_send_ack(uint8_t request_id, uint16_t sequence)
                          (uint16_t)sizeof(payload));
 }
 
+/*
+ * Function:
+ *     app_send_nack
+ *
+ * Purpose:
+ *     Builds and sends a NACK response for a rejected Host request.
+ *
+ * Input Parameters:
+ *     request_id:
+ *         Message identifier of the rejected request.
+ *     sequence:
+ *         Sequence number copied from the request.
+ *     result:
+ *         Protocol result code explaining the rejection.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static void app_send_nack(uint8_t request_id,
                           uint16_t sequence,
                           protocol_result_code_t result)
 {
-    const uint8_t payload[3] =
+    const uint8_t payload[ACK_NACK_PAYLOAD_LENGTH] =
     {
-        request_id,
-        (uint8_t)result,
-        (uint8_t)s_state
+        [ACK_NACK_REQUEST_ID_OFFSET] = request_id,
+        [ACK_NACK_RESULT_OFFSET] = (uint8_t)result,
+        [ACK_NACK_STATE_OFFSET] = (uint8_t)s_state
     };
 
     (void)app_send_frame(PROTOCOL_MESSAGE_NACK,
@@ -128,21 +228,40 @@ static void app_send_nack(uint8_t request_id,
                          (uint16_t)sizeof(payload));
 }
 
+/*
+ * Function:
+ *     app_send_device_info
+ *
+ * Purpose:
+ *     Builds and sends the current device-information response.
+ *
+ * Input Parameters:
+ *     sequence:
+ *         Sequence number copied from the request.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static void app_send_device_info(uint16_t sequence)
 {
-    uint8_t payload[8u + sizeof(s_name)];
+    uint8_t payload[DEVICE_INFO_FIXED_PAYLOAD_LENGTH + sizeof(s_name)];
     size_t name_index;
 
-    protocol_write_u16_le(&payload[0], PROTOCOL_DEVICE_TYPE_STM32F446RE);
-    payload[2] = FW_VERSION_MAJOR;
-    payload[3] = FW_VERSION_MINOR;
-    payload[4] = FW_VERSION_PATCH;
-    protocol_write_u16_le(&payload[5], (uint16_t)APP_MAX_STREAM_RATE_HZ);
-    payload[7] = (uint8_t)sizeof(s_name);
+    protocol_write_u16_le(&payload[DEVICE_INFO_DEVICE_TYPE_OFFSET],
+                          PROTOCOL_DEVICE_TYPE_STM32F446RE);
+    payload[DEVICE_INFO_VERSION_MAJOR_OFFSET] = FW_VERSION_MAJOR;
+    payload[DEVICE_INFO_VERSION_MINOR_OFFSET] = FW_VERSION_MINOR;
+    payload[DEVICE_INFO_VERSION_PATCH_OFFSET] = FW_VERSION_PATCH;
+    protocol_write_u16_le(&payload[DEVICE_INFO_MAX_STREAM_RATE_OFFSET],
+                          (uint16_t)APP_MAX_STREAM_RATE_HZ);
+    payload[DEVICE_INFO_NAME_LENGTH_OFFSET] = (uint8_t)sizeof(s_name);
 
     for (name_index = 0u; name_index < sizeof(s_name); ++name_index)
     {
-        payload[8u + name_index] = s_name[name_index];
+        payload[DEVICE_INFO_NAME_OFFSET + name_index] = s_name[name_index];
     }
 
     (void)app_send_frame(PROTOCOL_MESSAGE_DEVICE_INFO,
@@ -151,6 +270,27 @@ static void app_send_device_info(uint16_t sequence)
                          (uint16_t)sizeof(payload));
 }
 
+/*
+ * Function:
+ *     app_process_command
+ *
+ * Purpose:
+ *     Validates one decoded command and performs the permitted state transition
+ *     or configuration update.
+ *
+ * Input Parameters:
+ *     frame:
+ *         Pointer to the decoded command frame. The frame is not modified.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Runs only in main context and is the owner of device-state changes.
+ */
 static void app_process_command(const protocol_frame_t *frame)
 {
     uint16_t interval_us;
@@ -208,7 +348,7 @@ static void app_process_command(const protocol_frame_t *frame)
                               PROTOCOL_RESULT_INVALID_STATE);
                 break;
             }
-            if (frame->payload_length != 2u)
+            if (frame->payload_length != STREAM_CONFIG_PAYLOAD_LENGTH)
             {
                 app_send_nack(frame->message_id,
                               frame->sequence,
@@ -248,7 +388,7 @@ static void app_process_command(const protocol_frame_t *frame)
             else
             {
                 s_state = DEVICE_STATE_STREAMING;
-                s_unsolicited_sequence = 1u;
+                s_unsolicited_sequence = APP_SEQUENCE_FIRST;
                 s_sample_counter = 0u;
                 s_waveform = WAVEFORM_TYPE_SINE;
                 s_waveform_phase_us = 0u;
@@ -286,6 +426,24 @@ static void app_process_command(const protocol_frame_t *frame)
     }
 }
 
+/*
+ * Function:
+ *     app_process_rx_byte
+ *
+ * Purpose:
+ *     Pushes one received byte into the protocol parser and dispatches a complete
+ *     command frame when available.
+ *
+ * Input Parameters:
+ *     data_byte:
+ *         One byte received from USART2.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ */
 static void app_process_rx_byte(uint8_t data_byte)
 {
     const protocol_parse_result_t result =
@@ -297,6 +455,25 @@ static void app_process_rx_byte(uint8_t data_byte)
     }
 }
 
+/*
+ * Function:
+ *     app_process_tick
+ *
+ * Purpose:
+ *     Advances application time and emits one telemetry frame when streaming.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Runs in main context after an ordered sample-tick event is dequeued.
+ */
 static void app_process_tick(void)
 {
     uint8_t payload[TELEMETRY_PAYLOAD_LENGTH];
@@ -334,41 +511,90 @@ static void app_process_tick(void)
     {
         status_flags |= PROTOCOL_STATUS_TX_OVERFLOW_OBSERVED;
     }
-    if (s_uart_error_seen || (serial_transport_get_uart_error_count() != 0u))
+    if ((s_has_uart_error == true) || (serial_transport_get_uart_error_count() != 0u))
     {
         status_flags |= PROTOCOL_STATUS_UART_ERROR_OBSERVED;
     }
 
-    protocol_write_u32_le(&payload[0], s_sample_counter);
-    protocol_write_u32_le(&payload[4], s_tick_us);
+    protocol_write_u32_le(&payload[TELEMETRY_SAMPLE_COUNTER_OFFSET],
+                          s_sample_counter);
+    protocol_write_u32_le(&payload[TELEMETRY_DEVICE_TICK_OFFSET], s_tick_us);
     protocol_write_float32_le(
-        &payload[8],
+        &payload[TELEMETRY_SAMPLE_VALUE_OFFSET],
         waveform_generator_sample(s_waveform, s_waveform_phase_us));
-    protocol_write_u16_le(&payload[12], status_flags);
+    protocol_write_u16_le(&payload[TELEMETRY_STATUS_FLAGS_OFFSET],
+                          status_flags);
 
     (void)app_send_frame(PROTOCOL_MESSAGE_TELEMETRY_SAMPLE,
                          s_unsolicited_sequence,
                          payload,
                          TELEMETRY_PAYLOAD_LENGTH);
-    s_unsolicited_sequence = (uint16_t)(s_unsolicited_sequence + 1u);
-    platform_led_set((s_sample_counter & 0x7Fu) == 0u);
+    if (s_unsolicited_sequence == UINT16_MAX)
+    {
+        s_unsolicited_sequence = APP_SEQUENCE_FIRST;
+    }
+    else
+    {
+        s_unsolicited_sequence = (uint16_t)(s_unsolicited_sequence + 1u);
+    }
+    platform_led_set((s_sample_counter & APP_LED_TOGGLE_SAMPLE_MASK) == 0u);
 }
 
+/*
+ * Function:
+ *     app_init
+ *
+ * Purpose:
+ *     Initializes application-owned state, parser state, and the initial
+ *     sample-timer interval.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Call once from main context after platform and transport initialization.
+ */
 void app_init(void)
 {
     s_state = DEVICE_STATE_IDLE;
     s_interval_us = (uint16_t)APP_INITIAL_STREAM_INTERVAL_US;
-    s_unsolicited_sequence = 1u;
+    s_unsolicited_sequence = APP_SEQUENCE_FIRST;
     s_tick_us = 0u;
     s_waveform = WAVEFORM_TYPE_SINE;
     s_waveform_phase_us = 0u;
     s_waveform_elapsed_us = 0u;
     s_sample_counter = 0u;
-    s_uart_error_seen = false;
+    s_has_uart_error = false;
     protocol_parser_init(&s_parser);
     platform_sample_timer_set_interval_us(s_interval_us);
 }
 
+/*
+ * Function:
+ *     app_process_event
+ *
+ * Purpose:
+ *     Validates and dispatches one ordered application event.
+ *
+ * Input Parameters:
+ *     event:
+ *         Pointer to the event to process. The referenced event is not modified.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     Runs in main context and owns all application state transitions.
+ */
 void app_process_event(const app_event_t *event)
 {
     if (event == NULL)
@@ -387,7 +613,7 @@ void app_process_event(const app_event_t *event)
             break;
 
         case APP_EVENT_TYPE_UART_ERROR:
-            s_uart_error_seen = true;
+            s_has_uart_error = true;
             break;
 
         default:

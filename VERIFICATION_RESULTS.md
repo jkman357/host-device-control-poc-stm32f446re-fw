@@ -1,8 +1,8 @@
 # Verification Results
 
-Baseline firmware commit: `04f8419`
+Baseline firmware commit: `6b02740`
 
-Corrected firmware version: `0.2.7`
+Corrected firmware version: `0.2.8`
 
 Verification date: `2026-07-26`
 
@@ -10,6 +10,7 @@ Verification date: `2026-07-26`
 
 The repository software checks cover:
 
+- Product-owned C source coding-rule validation;
 - repository and protocol authority validation;
 - byte-exact protocol-vector CRC validation;
 - protocol round-trip and CRC rejection host test;
@@ -34,7 +35,7 @@ make validate
 
 One prior-baseline screenshot was provided for firmware 0.2.5 at 460,800 baud and 200 Hz. It showed 1,090 samples with zero CRC/format/partial/unknown errors and zero lost/UI drops. This is retained under `docs/evidence/` and recorded as continuity evidence only.
 
-No v0.2.7 target-board profile is claimed as executed in this package. The following remain required:
+No v0.2.8 target-board profile is claimed as executed in this package. The following remain required:
 
 1. STM32CubeIDE Debug and Release clean builds for each selected baud profile.
 2. Flash and reset on the target NUCLEO-F446RE.

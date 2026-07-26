@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.8
+
+- Applied standardized File Headers to every Product-owned C source and header.
+- Added complete Function Headers immediately before every Product-owned declaration and definition.
+- Reworked general comments, Boolean names, private helper names, callback typedef naming, and system-value constants.
+- Replaced Protocol float union type-punning with bounded object-representation copying and explicit little-endian serialization.
+- Added explicit FPU float-representation compile-time checks.
+- Added a Global Object Record for the startup vector table.
+- Fixed unsolicited telemetry sequence rollover so sequence zero is never emitted.
+- Added a focused coding-rule checker to local validation and CI.
+- Updated the firmware-reported patch version to 0.2.8.
+
 ## v0.2.7
 
 - Added the shared MCU-side list for 1,200 through 921,600 baud, matching the 11 PC application choices.

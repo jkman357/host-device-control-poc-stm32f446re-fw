@@ -1,15 +1,72 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     protocol.c
+//
+// Purpose:
+//     Implements the bounded binary protocol codec and incremental parser.
+//
+// Responsibilities:
+//     - Calculates CRC-16/CCITT-FALSE checksums.
+//     - Encodes frames into caller-owned bounded buffers.
+//     - Parses frames incrementally with length, CRC, and timeout validation.
+//     - Serializes integer and floating-point fields explicitly in little-endian order.
+//
+// Notes:
+//     The module owns no dynamic memory and performs no transport input or output.
+
 #include "protocol.h"
 
+#include <float.h>
 #include <limits.h>
 
-#define CRC_INITIAL                         (0xFFFFu)
-#define CRC_POLYNOMIAL                      (0x1021u)
-#define HEADER_VERSION_OFFSET               (0u)
-#define HEADER_MESSAGE_ID_OFFSET            (1u)
-#define HEADER_SEQUENCE_OFFSET              (2u)
-#define HEADER_PAYLOAD_LENGTH_OFFSET        (4u)
+#define CRC_INITIAL (0xFFFFu)
+#define CRC_POLYNOMIAL (0x1021u)
+#define CRC_MSB_MASK (0x8000u)
+#define CRC_BIT_COUNT_PER_BYTE (8u)
 
+#define BYTE_SHIFT_8 (8u)
+#define BYTE_SHIFT_16 (16u)
+#define BYTE_SHIFT_24 (24u)
+
+#define HEADER_VERSION_OFFSET (0u)
+#define HEADER_MESSAGE_ID_OFFSET (1u)
+#define HEADER_SEQUENCE_OFFSET (2u)
+#define HEADER_PAYLOAD_LENGTH_OFFSET (4u)
+
+#define FRAME_SOF_0_OFFSET (0u)
+#define FRAME_SOF_1_OFFSET (1u)
+#define FRAME_VERSION_OFFSET (2u)
+#define FRAME_MESSAGE_ID_OFFSET (3u)
+#define FRAME_SEQUENCE_OFFSET (4u)
+#define FRAME_PAYLOAD_LENGTH_OFFSET (6u)
+#define FRAME_PAYLOAD_OFFSET (8u)
+#define FRAME_CRC_INPUT_OFFSET FRAME_VERSION_OFFSET
+#define FRAME_CRC_HEADER_LENGTH (6u)
+
+_Static_assert(sizeof(float) == sizeof(uint32_t),
+               "Protocol float32 requires a 32-bit float object representation.");
+_Static_assert((FLT_RADIX == 2) && (FLT_MANT_DIG == 24) && (FLT_MAX_EXP == 128),
+               "Protocol float32 requires an IEEE-754 binary32 representation.");
+
+/*
+ * Function:
+ *     protocol_increment_saturating
+ *
+ * Purpose:
+ *     Increments an error counter without permitting unsigned wraparound.
+ *
+ * Input Parameters:
+ *     value:
+ *         Pointer to the counter to inspect and update.
+ *
+ * Output Parameters:
+ *     value:
+ *         Receives the incremented value unless already saturated.
+ *
+ * Return Value:
+ *     None.
+ */
 static void protocol_increment_saturating(uint32_t *value)
 {
     if (*value < UINT32_MAX)
@@ -18,14 +75,33 @@ static void protocol_increment_saturating(uint32_t *value)
     }
 }
 
+/*
+ * Function:
+ *     protocol_crc_update
+ *
+ * Purpose:
+ *     Updates a CRC-16/CCITT-FALSE accumulator with one byte.
+ *
+ * Input Parameters:
+ *     crc:
+ *         Current CRC accumulator.
+ *     data_byte:
+ *         Next byte to include.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Updated CRC accumulator.
+ */
 static uint16_t protocol_crc_update(uint16_t crc, uint8_t data_byte)
 {
     uint8_t bit_index;
 
-    crc ^= (uint16_t)((uint16_t)data_byte << 8u);
-    for (bit_index = 0u; bit_index < 8u; ++bit_index)
+    crc ^= (uint16_t)((uint16_t)data_byte << BYTE_SHIFT_8);
+    for (bit_index = 0u; bit_index < CRC_BIT_COUNT_PER_BYTE; bit_index += 1u)
     {
-        if ((crc & 0x8000u) != 0u)
+        if ((crc & CRC_MSB_MASK) != 0u)
         {
             crc = (uint16_t)(((uint32_t)crc << 1u) ^ (uint32_t)CRC_POLYNOMIAL);
         }
@@ -38,6 +114,24 @@ static uint16_t protocol_crc_update(uint16_t crc, uint8_t data_byte)
     return crc;
 }
 
+/*
+ * Function:
+ *     protocol_parser_reset_candidate
+ *
+ * Purpose:
+ *     Discards the current partial frame while retaining accumulated error counters.
+ *
+ * Input Parameters:
+ *     parser:
+ *         Pointer to parser state to reset.
+ *
+ * Output Parameters:
+ *     parser:
+ *         Receives the wait-for-SOF candidate state.
+ *
+ * Return Value:
+ *     None.
+ */
 static void protocol_parser_reset_candidate(protocol_parser_t *parser)
 {
     parser->state = PROTOCOL_PARSER_WAIT_SOF_0;
@@ -48,6 +142,24 @@ static void protocol_parser_reset_candidate(protocol_parser_t *parser)
     parser->partial_frame_elapsed_us = 0u;
 }
 
+/*
+ * Function:
+ *     protocol_parser_init
+ *
+ * Purpose:
+ *     Initializes a caller-owned incremental parser and clears all error counters.
+ *
+ * Input Parameters:
+ *     parser:
+ *         Pointer to parser storage to initialize.
+ *
+ * Output Parameters:
+ *     parser:
+ *         Receives the initialized parser state when non-NULL.
+ *
+ * Return Value:
+ *     None.
+ */
 void protocol_parser_init(protocol_parser_t *parser)
 {
     if (parser == NULL)
@@ -61,6 +173,25 @@ void protocol_parser_init(protocol_parser_t *parser)
     protocol_parser_reset_candidate(parser);
 }
 
+/*
+ * Function:
+ *     protocol_crc16_ccitt_false
+ *
+ * Purpose:
+ *     Calculates CRC-16/CCITT-FALSE over a bounded byte sequence.
+ *
+ * Input Parameters:
+ *     data:
+ *         Pointer to input bytes; may be NULL only when length is zero.
+ *     length:
+ *         Number of input bytes.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Calculated CRC value.
+ */
 uint16_t protocol_crc16_ccitt_false(const uint8_t *data, size_t length)
 {
     uint16_t crc = CRC_INITIAL;
@@ -71,7 +202,7 @@ uint16_t protocol_crc16_ccitt_false(const uint8_t *data, size_t length)
         return 0u;
     }
 
-    for (data_index = 0u; data_index < length; ++data_index)
+    for (data_index = 0u; data_index < length; data_index += 1u)
     {
         crc = protocol_crc_update(crc, data[data_index]);
     }
@@ -79,6 +210,23 @@ uint16_t protocol_crc16_ccitt_false(const uint8_t *data, size_t length)
     return crc;
 }
 
+/*
+ * Function:
+ *     protocol_read_u16_le
+ *
+ * Purpose:
+ *     Reads one 16-bit unsigned little-endian value from a byte buffer.
+ *
+ * Input Parameters:
+ *     source:
+ *         Pointer to at least two readable bytes.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Decoded 16-bit value.
+ */
 uint16_t protocol_read_u16_le(const uint8_t *source)
 {
     if (source == NULL)
@@ -86,9 +234,26 @@ uint16_t protocol_read_u16_le(const uint8_t *source)
         return 0u;
     }
 
-    return (uint16_t)((uint16_t)source[0] | ((uint16_t)source[1] << 8u));
+    return (uint16_t)((uint16_t)source[0] | ((uint16_t)source[1] << BYTE_SHIFT_8));
 }
 
+/*
+ * Function:
+ *     protocol_read_u32_le
+ *
+ * Purpose:
+ *     Reads one 32-bit unsigned little-endian value from a byte buffer.
+ *
+ * Input Parameters:
+ *     source:
+ *         Pointer to at least four readable bytes.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Decoded 32-bit value.
+ */
 uint32_t protocol_read_u32_le(const uint8_t *source)
 {
     if (source == NULL)
@@ -97,43 +262,172 @@ uint32_t protocol_read_u32_le(const uint8_t *source)
     }
 
     return (uint32_t)source[0]
-         | ((uint32_t)source[1] << 8u)
-         | ((uint32_t)source[2] << 16u)
-         | ((uint32_t)source[3] << 24u);
+         | ((uint32_t)source[1] << BYTE_SHIFT_8)
+         | ((uint32_t)source[2] << BYTE_SHIFT_16)
+         | ((uint32_t)source[3] << BYTE_SHIFT_24);
 }
 
+/*
+ * Function:
+ *     protocol_write_u16_le
+ *
+ * Purpose:
+ *     Writes one 16-bit unsigned value in little-endian byte order.
+ *
+ * Input Parameters:
+ *     destination:
+ *         Pointer to at least two writable bytes.
+ *     value:
+ *         Value to serialize.
+ *
+ * Output Parameters:
+ *     destination:
+ *         Receives two serialized bytes.
+ *
+ * Return Value:
+ *     None.
+ */
 void protocol_write_u16_le(uint8_t *destination, uint16_t value)
 {
     if (destination != NULL)
     {
         destination[0] = (uint8_t)value;
-        destination[1] = (uint8_t)(value >> 8u);
+        destination[1] = (uint8_t)(value >> BYTE_SHIFT_8);
     }
 }
 
+/*
+ * Function:
+ *     protocol_write_u32_le
+ *
+ * Purpose:
+ *     Writes one 32-bit unsigned value in little-endian byte order.
+ *
+ * Input Parameters:
+ *     destination:
+ *         Pointer to at least four writable bytes.
+ *     value:
+ *         Value to serialize.
+ *
+ * Output Parameters:
+ *     destination:
+ *         Receives four serialized bytes.
+ *
+ * Return Value:
+ *     None.
+ */
 void protocol_write_u32_le(uint8_t *destination, uint32_t value)
 {
     if (destination != NULL)
     {
         destination[0] = (uint8_t)value;
-        destination[1] = (uint8_t)(value >> 8u);
-        destination[2] = (uint8_t)(value >> 16u);
-        destination[3] = (uint8_t)(value >> 24u);
+        destination[1] = (uint8_t)(value >> BYTE_SHIFT_8);
+        destination[2] = (uint8_t)(value >> BYTE_SHIFT_16);
+        destination[3] = (uint8_t)(value >> BYTE_SHIFT_24);
     }
 }
 
-void protocol_write_float32_le(uint8_t *destination, float value)
+/*
+ * Function:
+ *     protocol_float32_bits
+ *
+ * Purpose:
+ *     Copies a verified float32 object representation into an unsigned integer.
+ *
+ * Input Parameters:
+ *     value:
+ *         Floating-point value whose object representation is required.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     Unsigned integer containing the identical IEEE-754 binary32 bit pattern.
+ *
+ * Notes:
+ *     Character-type access is used to avoid prohibited union type-punning.
+ */
+static uint32_t protocol_float32_bits(float value)
 {
-    union
-    {
-        float float_value;
-        uint32_t uint32_value;
-    } converter;
+    uint32_t value_bits = 0u;
+    const uint8_t *source_bytes = (const uint8_t *)&value;
+    uint8_t *destination_bytes = (uint8_t *)&value_bits;
+    size_t byte_index;
 
-    converter.float_value = value;
-    protocol_write_u32_le(destination, converter.uint32_value);
+    for (byte_index = 0u; byte_index < sizeof(value_bits); byte_index += 1u)
+    {
+        destination_bytes[byte_index] = source_bytes[byte_index];
+    }
+
+    return value_bits;
 }
 
+/*
+ * Function:
+ *     protocol_write_float32_le
+ *
+ * Purpose:
+ *     Writes one verified 32-bit IEEE-754 floating-point value in little-endian order.
+ *
+ * Input Parameters:
+ *     destination:
+ *         Pointer to at least four writable bytes.
+ *     value:
+ *         Floating-point value to serialize.
+ *
+ * Output Parameters:
+ *     destination:
+ *         Receives four serialized bytes.
+ *
+ * Return Value:
+ *     None.
+ *
+ * Notes:
+ *     The build statically requires a 32-bit float representation.
+ */
+void protocol_write_float32_le(uint8_t *destination, float value)
+{
+    if (destination != NULL)
+    {
+        protocol_write_u32_le(destination, protocol_float32_bits(value));
+    }
+}
+
+/*
+ * Function:
+ *     protocol_encode_frame
+ *
+ * Purpose:
+ *     Validates and encodes one protocol frame into caller-owned storage.
+ *
+ * Input Parameters:
+ *     message_id:
+ *         Protocol message identifier.
+ *     sequence:
+ *         Protocol sequence number.
+ *     payload:
+ *         Pointer to payload bytes, or NULL for a zero-length payload.
+ *     payload_length:
+ *         Number of payload bytes.
+ *     output:
+ *         Pointer to caller-owned output buffer.
+ *     output_capacity:
+ *         Available bytes in output.
+ *     encoded_length:
+ *         Pointer to storage for the encoded byte count.
+ *
+ * Output Parameters:
+ *     output:
+ *         Receives the encoded frame on success.
+ *     encoded_length:
+ *         Receives the encoded frame length on success.
+ *
+ * Return Value:
+ *     true:
+ *         The frame was encoded successfully.
+ *     false:
+ *         An argument, length, or capacity check failed.
+ */
 bool protocol_encode_frame(uint8_t message_id,
                            uint16_t sequence,
                            const uint8_t *payload,
@@ -163,24 +457,57 @@ bool protocol_encode_frame(uint8_t message_id,
         return false;
     }
 
-    output[0] = PROTOCOL_SOF_0;
-    output[1] = PROTOCOL_SOF_1;
-    output[2] = PROTOCOL_VERSION;
-    output[3] = message_id;
-    protocol_write_u16_le(&output[4], sequence);
-    protocol_write_u16_le(&output[6], payload_length);
+    output[FRAME_SOF_0_OFFSET] = PROTOCOL_SOF_0;
+    output[FRAME_SOF_1_OFFSET] = PROTOCOL_SOF_1;
+    output[FRAME_VERSION_OFFSET] = PROTOCOL_VERSION;
+    output[FRAME_MESSAGE_ID_OFFSET] = message_id;
+    protocol_write_u16_le(&output[FRAME_SEQUENCE_OFFSET], sequence);
+    protocol_write_u16_le(&output[FRAME_PAYLOAD_LENGTH_OFFSET], payload_length);
 
-    for (payload_index = 0u; payload_index < payload_length; ++payload_index)
+    for (payload_index = 0u; payload_index < payload_length; payload_index += 1u)
     {
-        output[8u + payload_index] = payload[payload_index];
+        output[FRAME_PAYLOAD_OFFSET + payload_index] = payload[payload_index];
     }
 
-    crc = protocol_crc16_ccitt_false(&output[2], (size_t)6u + payload_length);
-    protocol_write_u16_le(&output[8u + payload_length], crc);
+    crc = protocol_crc16_ccitt_false(
+        &output[FRAME_CRC_INPUT_OFFSET],
+        (size_t)FRAME_CRC_HEADER_LENGTH + payload_length);
+    protocol_write_u16_le(&output[FRAME_PAYLOAD_OFFSET + payload_length], crc);
     *encoded_length = total_length;
     return true;
 }
 
+/*
+ * Function:
+ *     protocol_parser_push_byte
+ *
+ * Purpose:
+ *     Consumes one byte and advances the incremental frame parser.
+ *
+ * Input Parameters:
+ *     parser:
+ *         Pointer to parser state that is read and updated.
+ *     data_byte:
+ *         Next received wire byte.
+ *     frame:
+ *         Pointer to caller-owned decoded-frame storage.
+ *
+ * Output Parameters:
+ *     parser:
+ *         Receives the updated parser state and error counters.
+ *     frame:
+ *         Receives a validated frame only when FRAME_READY is returned.
+ *
+ * Return Value:
+ *     PROTOCOL_PARSE_NO_FRAME:
+ *         More bytes are required.
+ *     PROTOCOL_PARSE_FRAME_READY:
+ *         A complete validated frame was decoded.
+ *     PROTOCOL_PARSE_FORMAT_ERROR:
+ *         A structural field was invalid.
+ *     PROTOCOL_PARSE_CRC_ERROR:
+ *         The received CRC did not match.
+ */
 protocol_parse_result_t protocol_parser_push_byte(protocol_parser_t *parser,
                                                    uint8_t data_byte,
                                                    protocol_frame_t *frame)
@@ -237,7 +564,8 @@ protocol_parse_result_t protocol_parser_push_byte(protocol_parser_t *parser,
 
                 frame->version = parser->header[HEADER_VERSION_OFFSET];
                 frame->message_id = parser->header[HEADER_MESSAGE_ID_OFFSET];
-                frame->sequence = protocol_read_u16_le(&parser->header[HEADER_SEQUENCE_OFFSET]);
+                frame->sequence = protocol_read_u16_le(
+                    &parser->header[HEADER_SEQUENCE_OFFSET]);
                 frame->payload_length = payload_length;
                 parser->payload_index = 0u;
                 parser->state = (payload_length == 0u)
@@ -262,7 +590,7 @@ protocol_parse_result_t protocol_parser_push_byte(protocol_parser_t *parser,
             break;
 
         case PROTOCOL_PARSER_READ_CRC_HIGH:
-            parser->received_crc |= (uint16_t)((uint16_t)data_byte << 8u);
+            parser->received_crc |= (uint16_t)((uint16_t)data_byte << BYTE_SHIFT_8);
             if (parser->received_crc == parser->calculated_crc)
             {
                 protocol_parser_reset_candidate(parser);
@@ -282,6 +610,29 @@ protocol_parse_result_t protocol_parser_push_byte(protocol_parser_t *parser,
     return PROTOCOL_PARSE_NO_FRAME;
 }
 
+/*
+ * Function:
+ *     protocol_parser_advance_time_us
+ *
+ * Purpose:
+ *     Advances partial-frame timeout accounting and resets an expired candidate.
+ *
+ * Input Parameters:
+ *     parser:
+ *         Pointer to parser state that is read and updated.
+ *     elapsed_us:
+ *         Elapsed time in microseconds since the prior update.
+ *
+ * Output Parameters:
+ *     parser:
+ *         Receives updated timeout state and timeout count.
+ *
+ * Return Value:
+ *     true:
+ *         A partial frame timed out and was discarded.
+ *     false:
+ *         No timeout occurred or parser was NULL.
+ */
 bool protocol_parser_advance_time_us(protocol_parser_t *parser, uint32_t elapsed_us)
 {
     if ((parser == NULL) || (parser->state == PROTOCOL_PARSER_WAIT_SOF_0))

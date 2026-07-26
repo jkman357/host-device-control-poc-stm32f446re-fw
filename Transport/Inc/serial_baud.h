@@ -1,4 +1,18 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     serial_baud.h
+//
+// Purpose:
+//     Defines compile-time UART Baud Rate profiles and capacity calculations.
+//
+// Public Contract:
+//     - Defines the supported Baud Rate set and command-only threshold.
+//     - Calculates BRR, actual Baud Rate, error, and bounded stream interval limits.
+//     - Rejects unsupported or inaccurate compile-time configurations.
+//
+// Notes:
+//     The selected firmware profile must match the connected Host configuration.
 
 #ifndef SERIAL_BAUD_H
 #define SERIAL_BAUD_H

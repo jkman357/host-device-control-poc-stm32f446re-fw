@@ -1,10 +1,43 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
+//
+// File:
+//     app_event_ordering_test.c
+//
+// Purpose:
+//     Verifies bounded application event-queue ordering and overflow behavior.
+//
+// Responsibilities:
+//     - Checks first-in-first-out delivery across event types.
+//     - Checks empty-queue behavior and saturated overflow accounting.
+//
+// Notes:
+//     This host test uses assertions and the host critical-section implementation.
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "app_event.h"
 
+/*
+ * Function:
+ *     main
+ *
+ * Purpose:
+ *     Executes the ordered event-queue host test.
+ *
+ * Input Parameters:
+ *     None.
+ *
+ * Output Parameters:
+ *     None.
+ *
+ * Return Value:
+ *     EXIT_SUCCESS when all assertions pass.
+ *
+ * Notes:
+ *     Assertion failure terminates the host process.
+ */
 int main(void)
 {
     app_event_t event;
@@ -42,5 +75,5 @@ int main(void)
     assert(!app_event_post_tick_from_isr());
     assert(app_event_get_overflow_count() == 1u);
 
-    return 0;
+    return EXIT_SUCCESS;
 }
