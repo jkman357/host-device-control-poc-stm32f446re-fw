@@ -1,65 +1,84 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Ray Yang. All rights reserved.
+
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$ROOT/build-clang"
-TARGET="$BUILD_DIR/host-device-control-poc-stm32f446re-fw.elf"
-BINARY="$BUILD_DIR/host-device-control-poc-stm32f446re-fw.bin"
-
-CLANG="${CLANG:-clang}"
-LLD="${LLD:-ld.lld}"
-LLVM_OBJCOPY="${LLVM_OBJCOPY:-llvm-objcopy}"
-LLVM_SIZE="${LLVM_SIZE:-llvm-size}"
-
-require_tool() {
-  local tool="$1"
-
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    printf 'required build tool not found: %s\n' "$tool" >&2
-    return 1
-  fi
-}
-
-require_tool "$CLANG"
-require_tool "$LLD"
-require_tool "$LLVM_OBJCOPY"
-
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
-
-SOURCES=(
-  Core/Src/main.c
-  Core/Src/startup_stm32f446xx.c
-  Core/Src/syscalls.c
-  Platform/Src/platform.c
-  App/Src/app.c
-  App/Src/app_event.c
-  App/Src/sine_generator.c
-  Protocol/Src/protocol.c
-  Protocol/Src/protocol_crc.c
-  Transport/Src/serial_transport.c
-)
-
-OBJECTS=()
-for source in "${SOURCES[@]}"; do
-  object="$BUILD_DIR/${source//\//_}.o"
-  "$CLANG" --target=arm-none-eabi -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard \
-    -std=c11 -ffreestanding -fno-builtin -fdata-sections -ffunction-sections \
-    -Wall -Wextra -Werror -Wshadow -Wundef -Wconversion \
-    -ICore/Inc -IPlatform/Inc -IApp/Inc -IProtocol/Inc -ITransport/Inc \
-    -c "$ROOT/$source" -o "$object"
-  OBJECTS+=("$object")
+for tool in clang ld.lld; do
+    if ! command -v "${tool}" >/dev/null; then
+        echo "missing tool: ${tool}" >&2
+        exit 127
+    fi
 done
 
-"$LLD" -flavor gnu -T "$ROOT/STM32F446RETX_FLASH.ld" \
-  --gc-sections "${OBJECTS[@]}" -o "$TARGET"
-
-"$LLVM_OBJCOPY" -O binary "$TARGET" "$BINARY"
-
-if command -v "$LLVM_SIZE" >/dev/null 2>&1; then
-  "$LLVM_SIZE" "$TARGET"
+if command -v llvm-size >/dev/null; then
+    size_tool="llvm-size"
+elif command -v size >/dev/null; then
+    size_tool="size"
 else
-  printf 'optional build tool not found; size report skipped: %s\n' "$LLVM_SIZE"
+    echo "missing tool: llvm-size or size" >&2
+    exit 127
 fi
 
-printf 'clang ARM build: PASS\n'
+output_directory="build/clang"
+rm -rf "${output_directory}"
+mkdir -p "${output_directory}"
+
+include_flags=(
+    -IApp/Inc
+    -IProtocol/Inc
+    -ITransport/Inc
+    -IPlatform/Inc
+)
+
+compiler_flags=(
+    --target=arm-none-eabi
+    -mcpu=cortex-m4
+    -mthumb
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=hard
+    -std=c11
+    -ffreestanding
+    -fno-builtin
+    -fdata-sections
+    -ffunction-sections
+    -Wall
+    -Wextra
+    -Wshadow
+    -Wundef
+    -Wconversion
+    -Wdouble-promotion
+    -Wformat=2
+    -Werror
+)
+
+sources=(
+    App/Src/app.c
+    App/Src/app_event.c
+    App/Src/sine_generator.c
+    Core/Src/main.c
+    Core/Src/startup_stm32f446xx.c
+    Core/Src/syscalls.c
+    Platform/Src/platform_stm32f446re.c
+    Protocol/Src/protocol.c
+    Transport/Src/serial_transport.c
+)
+
+objects=()
+for source_path in "${sources[@]}"; do
+    object_path="${output_directory}/$(basename "${source_path%.c}").o"
+    clang \
+        "${compiler_flags[@]}" \
+        "${include_flags[@]}" \
+        -c "${source_path}" \
+        -o "${object_path}"
+    objects+=("${object_path}")
+done
+
+ld.lld \
+    -T STM32F446RETX_FLASH.ld \
+    --gc-sections \
+    -Map="${output_directory}/firmware.map" \
+    -o "${output_directory}/firmware.elf" \
+    "${objects[@]}"
+
+"${size_tool}" "${output_directory}/firmware.elf"

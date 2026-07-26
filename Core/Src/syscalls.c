@@ -1,143 +1,39 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
-//
-// File:
-//     syscalls.c
-//
-// Purpose:
-//     Provides explicit unsupported POSIX syscall stubs for the bare-metal PoC.
-//
-// Responsibilities:
-//     - Satisfies newlib-nano integration symbols.
-//     - Rejects file-system and standard-stream operations.
-//     - Does not allocate memory or redirect I/O.
-
-#include "syscalls.h"
-
-#define SYSCALL_RESULT_UNSUPPORTED    (-1)
 
 /*
- * Function:
- *     _close
+ * Minimal newlib syscall boundary.
  *
- * Purpose:
- *     Rejects a file close request because no file system is available.
- *
- * Input Parameters:
- *     file_descriptor:
- *         Supplies the newlib file descriptor.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     SYSCALL_RESULT_UNSUPPORTED:
- *         The operation is unsupported.
- *
- * Notes:
- *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
+ * This firmware does not expose a POSIX file-descriptor layer.  The explicit
+ * stubs below prevent GCC/newlib-nano from selecting libnosys warning stubs
+ * during the final link.  Each unsupported operation fails deterministically.
  */
+
 int _close(int file_descriptor)
 {
     (void)file_descriptor;
-    return SYSCALL_RESULT_UNSUPPORTED;
+    return -1;
 }
 
-/*
- * Function:
- *     _lseek
- *
- * Purpose:
- *     Rejects a file seek request because no file system is available.
- *
- * Input Parameters:
- *     file_descriptor:
- *         Supplies the newlib file descriptor.
- *     offset:
- *         Supplies the requested byte offset.
- *     origin:
- *         Supplies the requested seek origin.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     SYSCALL_RESULT_UNSUPPORTED:
- *         The operation is unsupported.
- *
- * Notes:
- *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
- */
 int _lseek(int file_descriptor, int offset, int origin)
 {
     (void)file_descriptor;
     (void)offset;
     (void)origin;
-    return SYSCALL_RESULT_UNSUPPORTED;
+    return -1;
 }
 
-/*
- * Function:
- *     _read
- *
- * Purpose:
- *     Rejects a standard file read request.
- *
- * Input Parameters:
- *     file_descriptor:
- *         Supplies the newlib file descriptor.
- *     buffer:
- *         Points to caller-owned destination storage.
- *     length:
- *         Supplies the requested byte count.
- *
- * Output Parameters:
- *     buffer:
- *         Remains unchanged because the operation is unsupported.
- *
- * Return Value:
- *     SYSCALL_RESULT_UNSUPPORTED:
- *         The operation is unsupported.
- *
- * Notes:
- *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
- */
 int _read(int file_descriptor, char *buffer, int length)
 {
     (void)file_descriptor;
     (void)buffer;
     (void)length;
-    return SYSCALL_RESULT_UNSUPPORTED;
+    return -1;
 }
 
-/*
- * Function:
- *     _write
- *
- * Purpose:
- *     Rejects a standard file write request.
- *
- * Input Parameters:
- *     file_descriptor:
- *         Supplies the newlib file descriptor.
- *     buffer:
- *         Points to caller-owned source data that is not retained or modified.
- *     length:
- *         Supplies the requested byte count.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     SYSCALL_RESULT_UNSUPPORTED:
- *         The operation is unsupported.
- *
- * Notes:
- *     The symbol name is mandated by newlib and is covered by Deviation Record DR-NAME-001.
- */
 int _write(int file_descriptor, char *buffer, int length)
 {
     (void)file_descriptor;
     (void)buffer;
     (void)length;
-    return SYSCALL_RESULT_UNSUPPORTED;
+    return -1;
 }

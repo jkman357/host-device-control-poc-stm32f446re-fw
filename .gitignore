@@ -1,18 +1,7 @@
-# STM32CubeIDE and local build output
+/build/
 /Debug/
 /Release/
-/build/
-/build-clang/
 *.launch
-
-# Python cache
 __pycache__/
 *.py[cod]
-
-# Editor / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
+.pytest_cache/

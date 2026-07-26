@@ -1,210 +1,139 @@
 // Copyright (c) 2026 Ray Yang. All rights reserved.
-//
-// File:
-//     app_event.c
-//
-// Purpose:
-//     Implements bounded event transfer from interrupt context to the main loop.
-//
-// Responsibilities:
-//     - Coalesces UART event flags.
-//     - Counts pending sample-timer ticks without dynamic allocation.
-//     - Protects event snapshots with a bounded interrupt critical section.
 
 #include "app_event.h"
 
 #include <limits.h>
 #include <stddef.h>
 
-#include "platform.h"
+#define APP_EVENT_QUEUE_MASK (APP_EVENT_QUEUE_CAPACITY - 1u)
 
-static volatile uint32_t s_event_flags;
-static volatile uint16_t s_tick_count;
-static volatile uint32_t s_tick_overflow_count;
+#if ((APP_EVENT_QUEUE_CAPACITY & APP_EVENT_QUEUE_MASK) != 0u)
+#error APP_EVENT_QUEUE_CAPACITY must be a power of two.
+#endif
 
-/*
- * Function:
- *     app_event_increment_saturating_u32
- *
- * Purpose:
- *     Saturating increment for a 32-bit diagnostic counter.
- *
- * Input Parameters:
- *     counter:
- *         Counter to increment.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- */
-static void app_event_increment_saturating_u32(volatile uint32_t *counter)
-{
-    if (*counter < UINT32_MAX)
-    {
-        *counter += 1u;
-    }
-}
+static volatile uint16_t s_head;
+static volatile uint16_t s_tail;
+static volatile uint32_t s_overflow_count;
+static app_event_t s_queue[APP_EVENT_QUEUE_CAPACITY];
 
-/*
- * Function:
- *     app_event_init
- *
- * Purpose:
- *     Initialize event state.
- *
- * Input Parameters:
- *     None.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- */
-void app_event_init(void)
-{
-    s_event_flags = 0u;
-    s_tick_count = 0u;
-    s_tick_overflow_count = 0u;
-}
-
-/*
- * Function:
- *     app_event_post_tick_from_isr
- *
- * Purpose:
- *     Posts one pending sample-timer tick from interrupt context.
- *
- * Input Parameters:
- *     None.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- *
- * Notes:
- *     Execution Context: ISR. Blocking: prohibited. Reentrant: protected
- *         by interrupt serialization. Timing Budget: bounded counter
- *         update.
- */
-void app_event_post_tick_from_isr(void)
-{
-    if (s_tick_count < UINT16_MAX)
-    {
-        s_tick_count += 1u;
-    }
-    else
-    {
-        app_event_increment_saturating_u32(&s_tick_overflow_count);
-    }
-}
-
-/*
- * Function:
- *     app_event_post_flags_from_isr
- *
- * Purpose:
- *     Adds event flags to the interrupt-owned pending event word.
- *
- * Input Parameters:
- *     flags:
- *         Supplies a bitwise OR of defined APP_EVENT_FLAG values.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- *
- * Notes:
- *     Execution Context: ISR. Blocking: prohibited. Reentrant: protected
- *         by interrupt serialization. Timing Budget: one
- *         read-modify-write operation.
- */
-void app_event_post_flags_from_isr(uint32_t flags)
-{
-    s_event_flags |= flags;
-}
-
-/*
- * Function:
- *     app_event_take
- *
- * Purpose:
- *     Atomically transfers all currently pending events to the caller.
- *
- * Input Parameters:
- *     None.
- *
- * Output Parameters:
- *     event_batch:
- *         Receives a coherent event snapshot when the pointer is valid.
- *         The object remains unchanged when the pointer is NULL.
- *
- * Return Value:
- *     true:
- *         At least one event flag or pending tick was transferred.
- *     false:
- *         The pointer was NULL or no event was pending.
- *
- * Notes:
- *     Runs in main context and uses a bounded PRIMASK critical section.
- */
-bool app_event_take(app_event_batch_t *event_batch)
+#ifndef APP_EVENT_HOST_TEST
+static uint32_t app_event_enter_critical(void)
 {
     uint32_t primask;
-    bool has_event;
 
-    if (event_batch == NULL)
+    __asm volatile(
+        "MRS %0, primask\n"
+        "CPSID i"
+        : "=r"(primask)
+        :
+        : "memory");
+
+    return primask;
+}
+
+static void app_event_leave_critical(uint32_t primask)
+{
+    __asm volatile("MSR primask, %0" : : "r"(primask) : "memory");
+}
+#else
+static uint32_t app_event_enter_critical(void)
+{
+    return 0u;
+}
+
+static void app_event_leave_critical(uint32_t primask)
+{
+    (void)primask;
+}
+#endif
+
+static bool app_event_post_from_isr(app_event_type_t type, uint8_t data_byte)
+{
+    uint16_t next_head;
+
+    next_head = (uint16_t)((s_head + 1u) & APP_EVENT_QUEUE_MASK);
+    if (next_head == s_tail)
+    {
+        if (s_overflow_count < UINT32_MAX)
+        {
+            s_overflow_count += 1u;
+        }
+        return false;
+    }
+
+    s_queue[s_head].type = type;
+    s_queue[s_head].data_byte = data_byte;
+    s_head = next_head;
+
+    return true;
+}
+
+void app_event_init(void)
+{
+    s_head = 0u;
+    s_tail = 0u;
+    s_overflow_count = 0u;
+}
+
+bool app_event_post_rx_byte_from_isr(uint8_t data_byte)
+{
+    return app_event_post_from_isr(APP_EVENT_TYPE_UART_RX_BYTE, data_byte);
+}
+
+bool app_event_post_tick_from_isr(void)
+{
+    return app_event_post_from_isr(APP_EVENT_TYPE_SAMPLE_TICK, 0u);
+}
+
+bool app_event_post_uart_error_from_isr(void)
+{
+    return app_event_post_from_isr(APP_EVENT_TYPE_UART_ERROR, 0u);
+}
+
+bool app_event_take(app_event_t *event)
+{
+    uint32_t primask;
+
+    if (event == NULL)
     {
         return false;
     }
 
-    primask = platform_irq_save();
-
-    event_batch->flags = s_event_flags;
-    event_batch->tick_count = s_tick_count;
-    event_batch->tick_overflow_count = s_tick_overflow_count;
-
-    s_event_flags = 0u;
-    s_tick_count = 0u;
-
-    platform_irq_restore(primask);
-
-    has_event = ((event_batch->flags != 0u) || (event_batch->tick_count != 0u));
-    return has_event;
-}
-
-/*
- * Function:
- *     app_event_wait
- *
- * Purpose:
- *     Atomically sleep until an interrupt can make an event pending.
- *
- * Input Parameters:
- *     None.
- *
- * Output Parameters:
- *     None.
- *
- * Return Value:
- *     None.
- */
-void app_event_wait(void)
-{
-    uint32_t primask;
-
-    primask = platform_irq_save();
-
-    if ((s_event_flags == 0u) && (s_tick_count == 0u))
+    primask = app_event_enter_critical();
+    if (s_tail == s_head)
     {
-        platform_wait_for_interrupt();
+        app_event_leave_critical(primask);
+        return false;
     }
 
-    platform_irq_restore(primask);
+    *event = s_queue[s_tail];
+    s_tail = (uint16_t)((s_tail + 1u) & APP_EVENT_QUEUE_MASK);
+    app_event_leave_critical(primask);
+
+    return true;
+}
+
+uint32_t app_event_get_overflow_count(void)
+{
+    return s_overflow_count;
+}
+
+void app_event_wait(void)
+{
+#ifndef APP_EVENT_HOST_TEST
+    uint32_t primask;
+
+    /*
+     * Disable interrupts before checking the queue so an event cannot arrive
+     * between the empty check and WFI. A newly pending interrupt wakes WFI even
+     * while PRIMASK is set; the saved mask is restored immediately afterward.
+     */
+    primask = app_event_enter_critical();
+    if (s_tail == s_head)
+    {
+        __asm volatile("DSB" : : : "memory");
+        __asm volatile("WFI" : : : "memory");
+    }
+    app_event_leave_critical(primask);
+#endif
 }
