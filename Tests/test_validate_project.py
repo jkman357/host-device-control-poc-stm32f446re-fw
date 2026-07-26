@@ -69,12 +69,22 @@ def main() -> None:
     expect_rejected(
         lambda project: mutate_file(
             project,
-            "Transport/Inc/serial_transport.h",
-            "(460800u)",
-            "(115200u)",
+            "Transport/Inc/serial_baud.h",
+            "SERIAL_BAUD_RATE_921600 (921600u)",
+            "SERIAL_BAUD_RATE_921600 (921500u)",
         ),
-        "must be 460800",
+        "shared baud list is missing 921600",
     )
+    expect_rejected(
+        lambda project: mutate_file(
+            project,
+            "Transport/Inc/serial_baud.h",
+            "SERIAL_BAUD_COMMAND_ONLY_MAX_RATE SERIAL_BAUD_RATE_9600",
+            "SERIAL_BAUD_COMMAND_ONLY_MAX_RATE SERIAL_BAUD_RATE_4800",
+        ),
+        "baud configuration incomplete",
+    )
+
     expect_rejected(
         lambda project: mutate_file(
             project,
@@ -97,10 +107,47 @@ def main() -> None:
         lambda project: mutate_file(
             project,
             "Transport/Src/serial_transport.c",
-            "USART2_BRR_16MHZ_460800 (0x0023u)",
-            "USART2_BRR_16MHZ_460800 (0x022Cu)",
+            "USART2->brr = USART2_BRR_VALUE;",
+            "USART2->brr = 0x0023u;",
         ),
-        "USART2 BRR must be 0x0023",
+        "USART2 baud validation incomplete",
+    )
+    expect_rejected(
+        lambda project: mutate_file(
+            project,
+            "Tools/build_all_baud_profiles.sh",
+            "    921600\n",
+            "",
+        ),
+        "all-profile build is missing 921600",
+    )
+    expect_rejected(
+        lambda project: mutate_file(
+            project,
+            "App/Src/app.c",
+            "interval_us < APP_EFFECTIVE_STREAM_MIN_INTERVAL_US",
+            "interval_us < PROTOCOL_STREAM_INTERVAL_MIN_US",
+        ),
+        "application baud policy incomplete",
+    )
+
+    expect_rejected(
+        lambda project: mutate_file(
+            project,
+            "App/Src/app.c",
+            "WAVEFORM_SWITCH_INTERVAL_US             (10000000u)",
+            "WAVEFORM_SWITCH_INTERVAL_US             (5000000u)",
+        ),
+        "waveform rotation incomplete",
+    )
+    expect_rejected(
+        lambda project: mutate_file(
+            project,
+            "App/Src/waveform_generator.c",
+            "static float waveform_sine_polynomial(float angle)",
+            "static float waveform_linear_approximation(float angle)",
+        ),
+        "waveform generator incomplete",
     )
 
     expect_rejected(

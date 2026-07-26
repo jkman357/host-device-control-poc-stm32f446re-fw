@@ -19,7 +19,17 @@ else
     exit 127
 fi
 
-output_directory="build/clang"
+serial_baud="${SERIAL_BAUD:-460800}"
+case "${serial_baud}" in
+    1200|2400|4800|9600|19200|38400|57600|115200|230400|460800|921600)
+        ;;
+    *)
+        echo "unsupported SERIAL_BAUD: ${serial_baud}" >&2
+        exit 2
+        ;;
+esac
+
+output_directory="build/clang-${serial_baud}"
 rm -rf "${output_directory}"
 mkdir -p "${output_directory}"
 
@@ -49,12 +59,13 @@ compiler_flags=(
     -Wdouble-promotion
     -Wformat=2
     -Werror
+    "-DSERIAL_TRANSPORT_BAUD_RATE=${serial_baud}u"
 )
 
 sources=(
     App/Src/app.c
     App/Src/app_event.c
-    App/Src/sine_generator.c
+    App/Src/waveform_generator.c
     Core/Src/main.c
     Core/Src/startup_stm32f446xx.c
     Core/Src/syscalls.c
@@ -81,4 +92,5 @@ ld.lld \
     -o "${output_directory}/firmware.elf" \
     "${objects[@]}"
 
+printf 'SERIAL_BAUD=%s\n' "${serial_baud}"
 "${size_tool}" "${output_directory}/firmware.elf"

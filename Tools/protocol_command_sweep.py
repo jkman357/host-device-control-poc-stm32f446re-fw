@@ -26,6 +26,29 @@ NACK = 0x81
 DEVICE_INFO = 0x82
 TELEMETRY_SAMPLE = 0x90
 
+RESULT_INVALID_STATE = 0x04
+PERIPHERAL_CLOCK_HZ = 16_000_000
+BITS_PER_BYTE = 10
+TELEMETRY_FRAME_BYTES = 24
+STREAM_RESERVE_PERCENT = 20
+PROTOCOL_MIN_INTERVAL_US = 1000
+PROTOCOL_MAX_INTERVAL_US = 60000
+COMMAND_ONLY_MAX_BAUD = 9600
+MAX_BAUD_ERROR_PPM = 25_000
+SUPPORTED_BAUD_RATES = (
+    1200,
+    2400,
+    4800,
+    9600,
+    19200,
+    38400,
+    57600,
+    115200,
+    230400,
+    460800,
+    921600,
+)
+
 Frame = Tuple[int, int, int, bytes]
 
 
@@ -97,6 +120,38 @@ def encode(message_id: int, sequence: int, payload: bytes = b"") -> bytes:
     return SOF + body + struct.pack("<H", crc16(body))
 
 
+
+def calculate_brr(baud: int) -> int:
+    return (PERIPHERAL_CLOCK_HZ + (baud // 2)) // baud
+
+
+def calculate_actual_baud(baud: int) -> int:
+    return PERIPHERAL_CLOCK_HZ // calculate_brr(baud)
+
+
+def calculate_baud_error_ppm(baud: int) -> int:
+    brr = calculate_brr(baud)
+    difference = abs(PERIPHERAL_CLOCK_HZ - (baud * brr))
+    denominator = baud * brr
+    return ((difference * 1_000_000) + (denominator // 2)) // denominator
+
+
+def minimum_stream_interval_us(baud: int) -> Optional[int]:
+    if baud <= COMMAND_ONLY_MAX_BAUD:
+        return None
+
+    safe_baud = min(baud, calculate_actual_baud(baud))
+    numerator = (
+        1_000_000
+        * TELEMETRY_FRAME_BYTES
+        * BITS_PER_BYTE
+        * (100 + STREAM_RESERVE_PERCENT)
+    )
+    denominator = safe_baud * 100
+    calculated = (numerator + denominator - 1) // denominator
+    return max(PROTOCOL_MIN_INTERVAL_US, calculated)
+
+
 def key_pressed() -> bool:
     if os.name == "nt":
         import msvcrt
@@ -161,6 +216,15 @@ def expect_ack(frame: Frame, request_id: int, expected_state: int) -> None:
         raise RuntimeError(f"unexpected ACK: {frame}")
 
 
+def expect_nack(
+    frame: Frame, request_id: int, result: int, expected_state: int
+) -> None:
+    version, message_id, _, payload = frame
+    expected_payload = bytes((request_id, result, expected_state))
+    if version != VERSION or message_id != NACK or payload != expected_payload:
+        raise RuntimeError(f"unexpected NACK: {frame}")
+
+
 def strict_result(
     *,
     sample_count: int,
@@ -207,9 +271,56 @@ def run(args: argparse.Namespace) -> None:
         device_info = wait_for_direct_response(
             port, parser, pending_frames, GET_DEVICE_INFO, sequence
         )
-        if device_info[1] != DEVICE_INFO:
-            raise RuntimeError("GET_DEVICE_INFO did not return DEVICE_INFO")
+        if device_info[1] != DEVICE_INFO or len(device_info[3]) < 8:
+            raise RuntimeError("GET_DEVICE_INFO did not return valid DEVICE_INFO")
+
+        reported_max_stream_hz = struct.unpack_from("<H", device_info[3], 5)[0]
+        configured_minimum = minimum_stream_interval_us(args.baud)
+        expected_max_stream_hz = (
+            0
+            if configured_minimum is None
+            else 1_000_000 // configured_minimum
+        )
+        if reported_max_stream_hz != expected_max_stream_hz:
+            raise RuntimeError(
+                "DEVICE_INFO max stream rate mismatch: "
+                f"reported={reported_max_stream_hz}, "
+                f"expected={expected_max_stream_hz}"
+            )
         sequence += 1
+
+        if configured_minimum is None:
+            port.write(
+                encode(
+                    SET_STREAM_CONFIG,
+                    sequence,
+                    struct.pack("<H", args.interval_us),
+                )
+            )
+            expect_nack(
+                wait_for_direct_response(
+                    port, parser, pending_frames, SET_STREAM_CONFIG, sequence
+                ),
+                SET_STREAM_CONFIG,
+                RESULT_INVALID_STATE,
+                0,
+            )
+            sequence += 1
+
+            port.write(encode(START_STREAM, sequence))
+            expect_nack(
+                wait_for_direct_response(
+                    port, parser, pending_frames, START_STREAM, sequence
+                ),
+                START_STREAM,
+                RESULT_INVALID_STATE,
+                0,
+            )
+            print(
+                f"Protocol command-only sweep: PASS at {args.baud} baud "
+                "(streaming intentionally disabled)"
+            )
+            return
 
         port.write(
             encode(
@@ -396,6 +507,24 @@ def self_test() -> None:
         parser=error_parser,
     )
 
+    expected_minimums = {
+        1200: None,
+        2400: None,
+        4800: None,
+        9600: None,
+        19200: 15000,
+        38400: 7507,
+        57600: 5005,
+        115200: 2503,
+        230400: 1250,
+        460800: 1000,
+        921600: 1000,
+    }
+    for baud, expected_minimum in expected_minimums.items():
+        assert baud in SUPPORTED_BAUD_RATES
+        assert calculate_baud_error_ppm(baud) <= MAX_BAUD_ERROR_PPM
+        assert minimum_stream_interval_us(baud) == expected_minimum
+
     print("protocol_command_sweep self-test: PASS")
 
 
@@ -409,8 +538,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
-    if not 1000 <= args.interval_us <= 60000:
-        parser.error("--interval-us must be between 1000 and 60000")
+    if args.baud not in SUPPORTED_BAUD_RATES:
+        parser.error(
+            "--baud must be one of: "
+            + ", ".join(str(baud) for baud in SUPPORTED_BAUD_RATES)
+        )
+    if not PROTOCOL_MIN_INTERVAL_US <= args.interval_us <= PROTOCOL_MAX_INTERVAL_US:
+        parser.error(
+            f"--interval-us must be between {PROTOCOL_MIN_INTERVAL_US} "
+            f"and {PROTOCOL_MAX_INTERVAL_US}"
+        )
+    minimum_interval = minimum_stream_interval_us(args.baud)
+    if minimum_interval is not None and args.interval_us < minimum_interval:
+        parser.error(
+            f"--interval-us must be at least {minimum_interval} "
+            f"for {args.baud} baud"
+        )
     if args.display_every <= 0:
         parser.error("--display-every must be greater than zero")
     if not args.self_test and not args.port:

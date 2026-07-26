@@ -6,8 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SERIAL_TRANSPORT_BAUD_RATE (460800u)
-#define SERIAL_TRANSPORT_BITS_PER_BYTE (10u)
+#include "serial_baud.h"
+
+#define SERIAL_TRANSPORT_BITS_PER_BYTE SERIAL_BAUD_BITS_PER_BYTE
 #define SERIAL_TRANSPORT_TX_RING_CAPACITY (2048u)
 
 typedef enum

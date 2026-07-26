@@ -89,14 +89,24 @@ def validate_required_files() -> None:
         "STM32F446RETX_FLASH.ld",
         "App/Src/app.c",
         "App/Src/app_event.c",
+        "App/Inc/waveform_generator.h",
+        "App/Src/waveform_generator.c",
         "Core/Src/main.c",
         "Core/Src/startup_stm32f446xx.c",
         "Core/Src/syscalls.c",
         "Platform/Src/platform_stm32f446re.c",
         "Protocol/Src/protocol.c",
+        "Transport/Inc/serial_baud.h",
         "Transport/Src/serial_transport.c",
+        "Tests/serial_baud_profile_test.c",
+        "Tests/app_baud_policy_test.c",
+        "Tools/build_all_baud_profiles.sh",
+        "docs/Baud_Rate_Profiles.md",
+        "docs/Hardware_Baud_Test_Record.md",
         "Tests/app_event_ordering_test.c",
         "Tests/app_command_ordering_test.c",
+        "Tests/waveform_generator_test.c",
+        "Tests/app_waveform_rotation_test.c",
         "Tests/protocol_roundtrip_test.c",
         "Tools/protocol_command_sweep.py",
     ]
@@ -239,30 +249,109 @@ def validate_fpu_startup() -> None:
 
 
 def validate_bandwidth() -> None:
-    transport_header = read_text("Transport/Inc/serial_transport.h")
+    baud_header = read_text("Transport/Inc/serial_baud.h")
     transport_source = read_text("Transport/Src/serial_transport.c")
     app_source = read_text("App/Src/app.c")
+    baud_test = read_text("Tests/serial_baud_profile_test.c")
+    app_policy_test = read_text("Tests/app_baud_policy_test.c")
+    build_all = read_text("Tools/build_all_baud_profiles.sh")
+    workflow = read_text(".github/workflows/validate.yml")
+    readme = read_text("README.md")
+    profile_doc = read_text("docs/Baud_Rate_Profiles.md")
+    hardware_record = read_text("docs/Hardware_Baud_Test_Record.md")
 
-    baud = parse_define_u32(transport_header, "SERIAL_TRANSPORT_BAUD_RATE")
-    if baud != 460800:
-        ERRORS.append("SERIAL_TRANSPORT_BAUD_RATE must be 460800")
-    brr_match = re.search(
-        r"#define\s+USART2_BRR_16MHZ_460800\s+\((0x[0-9A-Fa-f]+|[0-9]+)u\)",
-        transport_source,
-    )
-    if brr_match is None:
-        ERRORS.append("USART2 BRR constant for 460800 is missing")
-    elif int(brr_match.group(1), 0) != 0x23:
-        ERRORS.append("USART2 BRR must be 0x0023 for 16 MHz / 460800")
-    if "115200" in transport_header or "115200" in transport_source:
-        ERRORS.append("legacy 115200 transport setting remains")
-    if "_Static_assert(UART_CAPACITY_BITS_PER_SECOND >= UART_REQUIRED_WITH_RESERVE" not in app_source:
-        ERRORS.append("compile-time UART bandwidth assertion is missing")
+    normalized_profile_doc = profile_doc.replace(",", "")
+    normalized_hardware_record = hardware_record.replace(",", "")
+    baud_rates = [
+        1200,
+        2400,
+        4800,
+        9600,
+        19200,
+        38400,
+        57600,
+        115200,
+        230400,
+        460800,
+        921600,
+    ]
+    for baud_rate in baud_rates:
+        token = f"SERIAL_BAUD_RATE_{baud_rate} ({baud_rate}u)"
+        if token not in baud_header:
+            ERRORS.append(f"shared baud list is missing {baud_rate}")
+        if str(baud_rate) not in build_all:
+            ERRORS.append(f"all-profile build is missing {baud_rate}")
+        if str(baud_rate) not in normalized_profile_doc:
+            ERRORS.append(f"baud profile document is missing {baud_rate}")
+        if str(baud_rate) not in normalized_hardware_record:
+            ERRORS.append(f"hardware baud record is missing {baud_rate}")
 
-    telemetry_required = 1000 * 24 * 10
-    required_with_reserve = telemetry_required * 120 // 100
-    if baud is not None and baud < required_with_reserve:
-        ERRORS.append("configured baud cannot carry 1 kHz telemetry with reserve")
+    required_header_tokens = [
+        "#ifndef SERIAL_TRANSPORT_BAUD_RATE",
+        "#define SERIAL_TRANSPORT_BAUD_RATE SERIAL_BAUD_RATE_460800",
+        "SERIAL_BAUD_FOR_EACH_SUPPORTED",
+        "SERIAL_BAUD_BRR(clock_hz_, rate_)",
+        "SERIAL_BAUD_ERROR_PPM(clock_hz_, rate_)",
+        "SERIAL_BAUD_CALCULATED_MIN_INTERVAL_US",
+        "SERIAL_BAUD_COMMAND_ONLY_MAX_RATE SERIAL_BAUD_RATE_9600",
+        "SERIAL_BAUD_MAX_ERROR_PPM (25000u)",
+    ]
+    for token in required_header_tokens:
+        if token not in baud_header:
+            ERRORS.append(f"baud configuration incomplete: {token}")
+
+    required_transport_tokens = [
+        "USART2_BRR_VALUE",
+        "USART2_BAUD_ERROR_PPM",
+        "Unsupported USART2 baud rate.",
+        "USART2 baud error exceeds the allowed limit.",
+        "USART2->brr = USART2_BRR_VALUE;",
+    ]
+    for token in required_transport_tokens:
+        if token not in transport_source:
+            ERRORS.append(f"USART2 baud validation incomplete: {token}")
+
+    required_app_tokens = [
+        "APP_STREAMING_SUPPORTED",
+        "APP_EFFECTIVE_STREAM_MIN_INTERVAL_US",
+        "APP_MAX_STREAM_RATE_HZ",
+        "APP_STREAMING_SUPPORTED == 0u",
+        "interval_us < APP_EFFECTIVE_STREAM_MIN_INTERVAL_US",
+        "(uint16_t)APP_MAX_STREAM_RATE_HZ",
+    ]
+    for token in required_app_tokens:
+        if token not in app_source:
+            ERRORS.append(f"application baud policy incomplete: {token}")
+
+    for token in [
+        "0x3415u",
+        "0x0341u",
+        "0x0023u",
+        "0x0011u",
+        "15000u",
+        "7507u",
+        "5005u",
+        "2503u",
+        "21242u",
+    ]:
+        if token not in baud_test:
+            ERRORS.append(f"baud profile host test incomplete: {token}")
+
+    for token in [
+        "TEST_STREAMING_SUPPORTED",
+        "PROTOCOL_RESULT_INVALID_STATE",
+        "TEST_EFFECTIVE_MIN_INTERVAL_US",
+        "TEST_MAX_STREAM_RATE_HZ",
+    ]:
+        if token not in app_policy_test:
+            ERRORS.append(f"app baud policy test incomplete: {token}")
+
+    if "build_all_baud_profiles.sh" not in workflow:
+        ERRORS.append("CI does not build all supported baud profiles")
+    if "compile-time" not in readme or "command-only" not in readme:
+        ERRORS.append("README does not explain baud selection and command-only mode")
+    if "Not executed" not in hardware_record:
+        ERRORS.append("hardware baud test record must preserve unexecuted status")
 
 
 def validate_event_ordering() -> None:
@@ -323,12 +412,68 @@ def validate_command_sweep() -> None:
         "Protocol command sweep: STATISTICS ONLY",
         "payload[0] == request_id",
         "len(pending_frames) == 2",
+        "SUPPORTED_BAUD_RATES",
+        "minimum_stream_interval_us",
+        "Protocol command-only sweep: PASS",
+        "RESULT_INVALID_STATE",
     ]
     for token in required_tokens:
         if token not in sweep:
             ERRORS.append(f"command sweep strictness missing: {token}")
 
 
+
+
+def validate_waveform_rotation() -> None:
+    app_source = read_text("App/Src/app.c")
+    generator_header = read_text("App/Inc/waveform_generator.h")
+    generator_source = read_text("App/Src/waveform_generator.c")
+    generator_test = read_text("Tests/waveform_generator_test.c")
+    rotation_test = read_text("Tests/app_waveform_rotation_test.c")
+
+    app_tokens = [
+        "#define FW_VERSION_PATCH                       (7u)",
+        "#define WAVEFORM_SWITCH_INTERVAL_US             (10000000u)",
+        "s_waveform = WAVEFORM_TYPE_SINE;",
+        "s_waveform = waveform_generator_next(s_waveform);",
+        "waveform_generator_sample(s_waveform, s_waveform_phase_us)",
+    ]
+    for token in app_tokens:
+        if token not in app_source:
+            ERRORS.append(f"waveform rotation incomplete: {token}")
+
+    generator_tokens = [
+        "WAVEFORM_TYPE_SINE",
+        "WAVEFORM_TYPE_SQUARE",
+        "WAVEFORM_TYPE_TRIANGLE",
+        "WAVEFORM_TYPE_ECG_70_BPM",
+        "WAVEFORM_ECG_70_BPM_PERIOD_US (857143u)",
+        "static float waveform_sine_polynomial(float angle)",
+        "waveform_smooth_pulse",
+    ]
+    for token in generator_tokens:
+        if token not in (generator_header + generator_source):
+            ERRORS.append(f"waveform generator incomplete: {token}")
+
+    if "SINE_FAST_COEFFICIENT" in generator_source:
+        ERRORS.append("legacy cusp-producing sine approximation remains")
+
+    for token in [
+        "245000u",
+        "WAVEFORM_TYPE_ECG_70_BPM",
+        "WAVEFORM_TYPE_TRIANGLE",
+    ]:
+        if token not in generator_test:
+            ERRORS.append(f"waveform generator test incomplete: {token}")
+
+    for token in [
+        "TICKS_PER_SEGMENT (200u)",
+        "push_ticks(TICKS_PER_SEGMENT)",
+        "push_ticks(3u)",
+        "s_telemetry_count == (TICKS_PER_SEGMENT * 4u)",
+    ]:
+        if token not in rotation_test:
+            ERRORS.append(f"waveform rotation test incomplete: {token}")
 
 def validate_newlib_syscalls() -> None:
     syscalls = read_text("Core/Src/syscalls.c")
@@ -365,6 +510,7 @@ def main() -> int:
     validate_bandwidth()
     validate_event_ordering()
     validate_command_sweep()
+    validate_waveform_rotation()
     validate_newlib_syscalls()
     validate_no_cubemx_ioc()
 

@@ -11,4 +11,4 @@ jobs:
       - run: python3 Tests/test_validate_project.py
       - run: python3 Tools/protocol_command_sweep.py --self-test
       - run: python3 Tools/test_linker_layout.py
-      - run: bash Tools/build_with_clang.sh
+      - run: bash Tools/build_all_baud_profiles.sh

@@ -29,15 +29,19 @@
 
 #define USART2_IRQ_NUMBER (38u)
 #define USART2_IRQ_PRIORITY (5u)
-#define USART2_PERIPHERAL_CLOCK_HZ (16000000u)
-#define USART2_BRR_16MHZ_460800 (0x0023u)
+#define USART2_BRR_VALUE \
+    SERIAL_BAUD_BRR(SERIAL_BAUD_PERIPHERAL_CLOCK_HZ, \
+                    SERIAL_TRANSPORT_BAUD_RATE)
+#define USART2_BAUD_ERROR_PPM \
+    SERIAL_BAUD_ERROR_PPM(SERIAL_BAUD_PERIPHERAL_CLOCK_HZ, \
+                          SERIAL_TRANSPORT_BAUD_RATE)
 
-_Static_assert(
-    USART2_BRR_16MHZ_460800 ==
-        ((USART2_PERIPHERAL_CLOCK_HZ +
-          (SERIAL_TRANSPORT_BAUD_RATE / 2u)) /
-         SERIAL_TRANSPORT_BAUD_RATE),
-    "USART2 BRR does not match the 16 MHz peripheral clock.");
+_Static_assert(SERIAL_BAUD_IS_SUPPORTED(SERIAL_TRANSPORT_BAUD_RATE) != 0u,
+               "Unsupported USART2 baud rate.");
+_Static_assert((USART2_BRR_VALUE > 0u) && (USART2_BRR_VALUE <= 0xFFFFu),
+               "USART2 BRR is outside the 16-bit register range.");
+_Static_assert(USART2_BAUD_ERROR_PPM <= SERIAL_BAUD_MAX_ERROR_PPM,
+               "USART2 baud error exceeds the allowed limit.");
 
 #define TX_RING_MASK (SERIAL_TRANSPORT_TX_RING_CAPACITY - 1u)
 
@@ -96,7 +100,7 @@ void serial_transport_init(void)
     USART2->cr1 = 0u;
     USART2->cr2 = 0u;
     USART2->cr3 = 0u;
-    USART2->brr = USART2_BRR_16MHZ_460800;
+    USART2->brr = USART2_BRR_VALUE;
 
     discard = USART2->sr;
     discard = USART2->dr;

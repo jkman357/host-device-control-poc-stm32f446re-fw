@@ -11,26 +11,48 @@
 #include "protocol.h"
 #include "protocol_messages.h"
 #include "serial_transport.h"
-#include "sine_generator.h"
+#include "waveform_generator.h"
 
 #define FW_VERSION_MAJOR                       (0u)
 #define FW_VERSION_MINOR                       (2u)
-#define FW_VERSION_PATCH                       (5u)
+#define FW_VERSION_PATCH                       (7u)
 #define MICROSECONDS_PER_SECOND                (1000000u)
+#define WAVEFORM_SWITCH_INTERVAL_US             (10000000u)
 #define TELEMETRY_PAYLOAD_LENGTH               (14u)
 #define TELEMETRY_FRAME_LENGTH                 \
     (PROTOCOL_FRAME_OVERHEAD_LENGTH + TELEMETRY_PAYLOAD_LENGTH)
-#define TELEMETRY_WIRE_BITS_PER_SECOND         \
-    ((MICROSECONDS_PER_SECOND / PROTOCOL_STREAM_INTERVAL_MIN_US) \
-     * TELEMETRY_FRAME_LENGTH \
-     * SERIAL_TRANSPORT_BITS_PER_BYTE)
-#define UART_CAPACITY_BITS_PER_SECOND          (SERIAL_TRANSPORT_BAUD_RATE)
-#define UART_RESERVED_PERCENT                  (20u)
-#define UART_REQUIRED_WITH_RESERVE             \
-    ((TELEMETRY_WIRE_BITS_PER_SECOND * (100u + UART_RESERVED_PERCENT)) / 100u)
+#define APP_STREAMING_SUPPORTED                \
+    ((SERIAL_BAUD_IS_COMMAND_ONLY(SERIAL_TRANSPORT_BAUD_RATE) == 0u) \
+         ? 1u                                                          \
+         : 0u)
+#define APP_CALCULATED_STREAM_MIN_INTERVAL_US  \
+    SERIAL_BAUD_CALCULATED_MIN_INTERVAL_US(    \
+        SERIAL_BAUD_PERIPHERAL_CLOCK_HZ,       \
+        SERIAL_TRANSPORT_BAUD_RATE,            \
+        TELEMETRY_FRAME_LENGTH,                \
+        SERIAL_TRANSPORT_BITS_PER_BYTE,        \
+        SERIAL_BAUD_STREAM_RESERVE_PERCENT)
+#define APP_EFFECTIVE_STREAM_MIN_INTERVAL_US   \
+    ((APP_CALCULATED_STREAM_MIN_INTERVAL_US > PROTOCOL_STREAM_INTERVAL_MIN_US) \
+         ? APP_CALCULATED_STREAM_MIN_INTERVAL_US                              \
+         : PROTOCOL_STREAM_INTERVAL_MIN_US)
+#define APP_INITIAL_STREAM_INTERVAL_US         \
+    (((APP_STREAMING_SUPPORTED != 0u)                                        \
+      && (PROTOCOL_STREAM_INTERVAL_DEFAULT_US                                \
+          < APP_EFFECTIVE_STREAM_MIN_INTERVAL_US))                           \
+         ? APP_EFFECTIVE_STREAM_MIN_INTERVAL_US                              \
+         : PROTOCOL_STREAM_INTERVAL_DEFAULT_US)
+#define APP_MAX_STREAM_RATE_HZ                 \
+    ((APP_STREAMING_SUPPORTED != 0u)                                        \
+         ? (MICROSECONDS_PER_SECOND / APP_EFFECTIVE_STREAM_MIN_INTERVAL_US) \
+         : 0u)
 
-_Static_assert(UART_CAPACITY_BITS_PER_SECOND >= UART_REQUIRED_WITH_RESERVE,
-               "UART baud is insufficient for 1 kHz telemetry plus reserve.");
+_Static_assert(SERIAL_BAUD_IS_SUPPORTED(SERIAL_TRANSPORT_BAUD_RATE) != 0u,
+               "Unsupported configured UART baud rate.");
+_Static_assert((APP_STREAMING_SUPPORTED == 0u)
+                   || (APP_EFFECTIVE_STREAM_MIN_INTERVAL_US
+                       <= PROTOCOL_STREAM_INTERVAL_MAX_US),
+               "Configured UART baud cannot support the protocol stream range.");
 
 static device_state_t s_state;
 static protocol_parser_t s_parser;
@@ -39,8 +61,10 @@ static uint8_t s_encoded[PROTOCOL_MAX_FRAME_LENGTH];
 static uint16_t s_interval_us;
 static uint16_t s_unsolicited_sequence;
 static uint32_t s_tick_us;
-static uint32_t s_phase_us;
+static uint32_t s_waveform_phase_us;
+static uint32_t s_waveform_elapsed_us;
 static uint32_t s_sample_counter;
+static waveform_type_t s_waveform;
 static bool s_uart_error_seen;
 
 static const uint8_t s_name[] =
@@ -113,9 +137,7 @@ static void app_send_device_info(uint16_t sequence)
     payload[2] = FW_VERSION_MAJOR;
     payload[3] = FW_VERSION_MINOR;
     payload[4] = FW_VERSION_PATCH;
-    protocol_write_u16_le(
-        &payload[5],
-        (uint16_t)(MICROSECONDS_PER_SECOND / PROTOCOL_STREAM_INTERVAL_MIN_US));
+    protocol_write_u16_le(&payload[5], (uint16_t)APP_MAX_STREAM_RATE_HZ);
     payload[7] = (uint8_t)sizeof(s_name);
 
     for (name_index = 0u; name_index < sizeof(s_name); ++name_index)
@@ -178,7 +200,8 @@ static void app_process_command(const protocol_frame_t *frame)
             break;
 
         case PROTOCOL_MESSAGE_SET_STREAM_CONFIG:
-            if (s_state != DEVICE_STATE_IDLE)
+            if ((s_state != DEVICE_STATE_IDLE)
+                || (APP_STREAMING_SUPPORTED == 0u))
             {
                 app_send_nack(frame->message_id,
                               frame->sequence,
@@ -194,7 +217,7 @@ static void app_process_command(const protocol_frame_t *frame)
             }
 
             interval_us = protocol_read_u16_le(frame->payload);
-            if ((interval_us < PROTOCOL_STREAM_INTERVAL_MIN_US)
+            if ((interval_us < APP_EFFECTIVE_STREAM_MIN_INTERVAL_US)
                 || (interval_us > PROTOCOL_STREAM_INTERVAL_MAX_US))
             {
                 app_send_nack(frame->message_id,
@@ -215,7 +238,8 @@ static void app_process_command(const protocol_frame_t *frame)
                               frame->sequence,
                               PROTOCOL_RESULT_INVALID_LENGTH);
             }
-            else if (s_state != DEVICE_STATE_IDLE)
+            else if ((s_state != DEVICE_STATE_IDLE)
+                     || (APP_STREAMING_SUPPORTED == 0u))
             {
                 app_send_nack(frame->message_id,
                               frame->sequence,
@@ -226,7 +250,9 @@ static void app_process_command(const protocol_frame_t *frame)
                 s_state = DEVICE_STATE_STREAMING;
                 s_unsolicited_sequence = 1u;
                 s_sample_counter = 0u;
-                s_phase_us = 0u;
+                s_waveform = WAVEFORM_TYPE_SINE;
+                s_waveform_phase_us = 0u;
+                s_waveform_elapsed_us = 0u;
                 app_send_ack(frame->message_id, frame->sequence);
             }
             break;
@@ -285,10 +311,19 @@ static void app_process_tick(void)
     }
 
     s_sample_counter += 1u;
-    s_phase_us += s_interval_us;
-    if (s_phase_us >= MICROSECONDS_PER_SECOND)
+    s_waveform_elapsed_us += s_interval_us;
+    s_waveform_phase_us += s_interval_us;
+
+    if (s_waveform_elapsed_us >= WAVEFORM_SWITCH_INTERVAL_US)
     {
-        s_phase_us -= MICROSECONDS_PER_SECOND;
+        s_waveform_elapsed_us -= WAVEFORM_SWITCH_INTERVAL_US;
+        s_waveform = waveform_generator_next(s_waveform);
+        s_waveform_phase_us = s_waveform_elapsed_us;
+    }
+
+    while (s_waveform_phase_us >= waveform_generator_period_us(s_waveform))
+    {
+        s_waveform_phase_us -= waveform_generator_period_us(s_waveform);
     }
 
     if (serial_transport_get_rx_overflow_count() != 0u)
@@ -306,7 +341,9 @@ static void app_process_tick(void)
 
     protocol_write_u32_le(&payload[0], s_sample_counter);
     protocol_write_u32_le(&payload[4], s_tick_us);
-    protocol_write_float32_le(&payload[8], sine_generator_sample(s_phase_us));
+    protocol_write_float32_le(
+        &payload[8],
+        waveform_generator_sample(s_waveform, s_waveform_phase_us));
     protocol_write_u16_le(&payload[12], status_flags);
 
     (void)app_send_frame(PROTOCOL_MESSAGE_TELEMETRY_SAMPLE,
@@ -320,10 +357,12 @@ static void app_process_tick(void)
 void app_init(void)
 {
     s_state = DEVICE_STATE_IDLE;
-    s_interval_us = PROTOCOL_STREAM_INTERVAL_DEFAULT_US;
+    s_interval_us = (uint16_t)APP_INITIAL_STREAM_INTERVAL_US;
     s_unsolicited_sequence = 1u;
     s_tick_us = 0u;
-    s_phase_us = 0u;
+    s_waveform = WAVEFORM_TYPE_SINE;
+    s_waveform_phase_us = 0u;
+    s_waveform_elapsed_us = 0u;
     s_sample_counter = 0u;
     s_uart_error_seen = false;
     protocol_parser_init(&s_parser);
